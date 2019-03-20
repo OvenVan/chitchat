@@ -1,0 +1,4 @@
+1.client向server注册（名字，ip），server保存client信息并向client定时发送心跳检测
+2.client向server请求所有节点；选择其他client发起链接。各client之间创建独立tcp连接
+3.当server中被注册的client过多时（每个client都需要心跳检测），将部分检测分配给最优client。当该client失效后，重新接管。
+4.
