@@ -40,12 +40,12 @@ type server struct {
 type handleconn struct {
 	c         net.Conn
 	delimiter byte
-	done      chan struct{}
 
 	errDone    chan error
 	errDoneTry chan error
-	closed     bool
+	closed     bool //if errDone is closed
 	mu         sync.Mutex
+	pmu        *sync.Mutex //lock readfunc
 
 	readfunc func([]byte) error
 }
@@ -84,13 +84,14 @@ func (s *server) Cut() {
 }
 
 func (s *server) errDiversion() {
-	defer fmt.Println("server eD quit")
+	//when upstream channel is closed(by closed flag),
+	//following data will be received but discarded
+	//when eDT channel has closed, this goroutine will exit
 	for {
-		err,ok := <-s.errDoneTry
-		if !ok{
+		err, ok := <-s.errDoneTry
+		if !ok {
 			return
 		}
-		fmt.Println("server eD still working")
 		s.mu.Lock()
 		if !s.closed {
 			s.errDone <- err
@@ -100,17 +101,15 @@ func (s *server) errDiversion() {
 }
 
 func (t *handleconn) errDiversion() {
-defer fmt.Println("handle eD quit")
 	for {
-		err,ok := <-t.errDoneTry
-		if !ok{
+		err, ok := <-t.errDoneTry
+		if !ok {
 			return
 		}
-		fmt.Println("handle eD still working")
 		t.mu.Lock()
 		if !t.closed {
 			t.errDone <- err
-		}else{
+		} else {
 			_ = err
 		}
 		t.mu.Unlock()
@@ -118,7 +117,6 @@ defer fmt.Println("handle eD quit")
 }
 
 func (s *server) Listen() { //异步通知调用者什么时候连接被关闭（出现错误）	//立即结束
-	defer fmt.Println("Listen has exited")
 	ipsocket := s.ipaddr + ":" + s.port
 	listener, err := net.Listen("tcp", ipsocket)
 	if err != nil {
@@ -131,18 +129,18 @@ func (s *server) Listen() { //异步通知调用者什么时候连接被关闭�
 }
 
 func handleListen(l net.Listener, s *server) { //cancelctx
-	defer fmt.Println("handleListen quit")
 	ctx, cfunc := context.WithCancel(context.Background())
 	s.cancelfunc = cfunc
-
+	var wg sync.WaitGroup
+loop:
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			break loop
 		default:
 			conn, err := l.Accept()
 			if err != nil {
-				s.errDoneTry <- err //TODO: Does it need a lock to protected
+				s.errDoneTry <- err
 				break
 			}
 			if s.readDDL != 0 {
@@ -152,16 +150,21 @@ func handleListen(l net.Listener, s *server) { //cancelctx
 				conn.SetWriteDeadline(time.Now().Add(s.writeDDL))
 			}
 
-			go handleConn(&handleconn{
+			h := &handleconn{
 				c:          conn,
 				delimiter:  s.delimiter,
-				done:       make(chan struct{}),
 				errDone:    s.errDoneTry,
 				errDoneTry: make(chan error),
 				readfunc:   s.readfunc,
-			}, ctx)
+				pmu:        &s.mu,
+			}
+			go h.errDiversion()
+			go handleConn(h, ctx, &wg)
+			wg.Add(1)
 		}
 	} //close conn at goroutine
+	wg.Wait()
+	close(s.errDoneTry)
 }
 
 func handleErr(err error) { //Not used yet, designed for handling errors with channel
@@ -171,36 +174,36 @@ func handleErr(err error) { //Not used yet, designed for handling errors with ch
 
 }
 
-func handleConn(h *handleconn, parentctx context.Context) {
+func handleConn(h *handleconn, parentctx context.Context, wg *sync.WaitGroup) {
 	defer fmt.Println("handleC quit")
 	var ctx context.Context
 	ctx, _ = context.WithCancel(parentctx) //TODO: if MAXLIVETIME is needed.
 	strReqChan := make(chan []byte)
 	readquit := make(chan struct{})
 	go read(h.c, h.delimiter, strReqChan, h.errDoneTry, readquit)
-	go h.errDiversion()
 
 	for {
 		select {
-		case <-ctx.Done(): //手动退出
+		case <-ctx.Done(): //quit manually
 			h.mu.Lock()
 			h.c.Close()
 			close(readquit)
 			h.closed = true
-			close(h.errDone)
-			//close(h.errDoneTry)
+			//close(h.errDone)		//close listen.eDT will cause an err when mulit-dial connections
+			close(h.errDoneTry)
 			h.mu.Unlock()
+			wg.Done()
 			return
-		case strReq, ok := <-strReqChan: //成功读取一个数据片段
+		case strReq, ok := <-strReqChan: //read a data slice successfully
 			if !ok {
-				return //EOF TODO: check if strReq is empty
+				return //EOF TODO: does it need a check if strReq is empty.
 			}
-			err := h.readfunc(strReq)
+			h.pmu.Lock()
+			err := h.readfunc(strReq) //requires a lock from hL
+			h.pmu.Unlock()
 			if err != nil {
 				h.errDone <- err
 			}
-			//case err := <-h.errDone: //读取片段时发生错误
-
 		}
 	}
 }
@@ -211,7 +214,6 @@ func read(c net.Conn, d byte, strReqChan chan<- []byte, errChan chan<- error, qu
 	for {
 		select {
 		case <-quit:
-			quit <- struct{}{}
 			return
 		default:
 			var buffer bytes.Buffer
@@ -221,7 +223,6 @@ func read(c net.Conn, d byte, strReqChan chan<- []byte, errChan chan<- error, qu
 					close(strReqChan)
 					if err != io.EOF {
 						errChan <- err
-						close(errChan)
 					}
 					return
 				}
@@ -233,8 +234,9 @@ func read(c net.Conn, d byte, strReqChan chan<- []byte, errChan chan<- error, qu
 			}
 			if d == '\n' && buffer.Bytes()[len(buffer.Bytes())-1] == '\r' {
 				strReqChan <- buffer.Bytes()[:len(buffer.Bytes())-1]
+			} else {
+				strReqChan <- buffer.Bytes()
 			}
-			strReqChan <- buffer.Bytes()
 		}
 	}
 }
