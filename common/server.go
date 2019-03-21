@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"reflect"
 	"sync"
@@ -18,17 +17,22 @@ func init() {
 	close(closedchan)
 }
 
+type Errsocket struct {
+	Err  error
+	Addr string
+}
+
 type server struct {
-	ipaddr    string
-	port      string
-	readDDL   time.Duration
-	writeDDL  time.Duration
+	ipaddr   string
+	readDDL  time.Duration
+	writeDDL time.Duration
+	//if delimiter is 0, then read until it's EOF
 	delimiter byte
 	readfunc  func([]byte) error
 	//unchangeble data
 
-	errDoneTry chan error
-	errDone    chan error
+	errDoneTry chan Errsocket
+	errDone    chan Errsocket
 	closed     bool
 	//under protected data
 	mu sync.Mutex
@@ -41,8 +45,8 @@ type handleconn struct {
 	c         net.Conn
 	delimiter byte
 
-	errDone    chan error
-	errDoneTry chan error
+	errDone    chan Errsocket
+	errDoneTry chan Errsocket
 	closed     bool //if errDone is closed
 	mu         sync.Mutex
 	pmu        *sync.Mutex //lock readfunc
@@ -51,32 +55,37 @@ type handleconn struct {
 }
 
 func NewServer(
-	ipaddr string, port string,
-	readDDL time.Duration, writeDDL time.Duration,
+	ipaddrsocket string,
 	delim byte, readfunc func([]byte) error) *server {
 	return &server{
-		ipaddr:     ipaddr,
-		port:       port,
-		readDDL:    readDDL,
-		writeDDL:   writeDDL,
+		ipaddr:     ipaddrsocket,
+		readDDL:    0,
+		writeDDL:   0,
 		delimiter:  delim,
-		errDoneTry: make(chan error),
-		errDone:    make(chan error),
+		errDoneTry: make(chan Errsocket),
+		errDone:    make(chan Errsocket),
 		closed:     false,
 		readfunc:   readfunc,
 	}
 }
 
-func (s *server) ErrDone() chan<- error {
+func (s *server) SetDeadLine(rDDL time.Duration, wDDL time.Duration) {
+	s.readDDL, s.writeDDL = rDDL, wDDL
+}
+
+func (s *server) ErrDone() <-chan Errsocket {
 	return s.errDone
 }
 
 func (s *server) Cut() {
+	//fmt.Println("Start Cut")
+	//defer fmt.Println("->Cut")
 	s.mu.Lock()
 	err := s.listener.Close()
 	s.closed = true
 	if err != nil {
-		s.errDone <- err
+		s.mu.Lock()
+		s.errDone <- Errsocket{err, s.ipaddr}
 	}
 	close(s.errDone)
 	s.mu.Unlock()
@@ -87,40 +96,42 @@ func (s *server) errDiversion() {
 	//when upstream channel is closed(by closed flag),
 	//following data will be received but discarded
 	//when eDT channel has closed, this goroutine will exit
+
+	fmt.Println("Start SeD")
+	defer fmt.Println("->SeD quit")
 	for {
 		err, ok := <-s.errDoneTry
-		if !ok {
+		if !ok { //errDoneTry has closed
 			return
 		}
-		s.mu.Lock()
-		if !s.closed {
+		if !s.closed { //errDone has NOT closed
 			s.errDone <- err
 		}
-		s.mu.Unlock()
+		s.mu.Unlock() //locked at error sender
 	}
 }
 
-func (t *handleconn) errDiversion() {
+func (h *handleconn) errDiversion() {
+	fmt.Println("Start HeD")
+	defer fmt.Println("->HeD quit")
 	for {
-		err, ok := <-t.errDoneTry
+		err, ok := <-h.errDoneTry
 		if !ok {
 			return
 		}
-		t.mu.Lock()
-		if !t.closed {
-			t.errDone <- err
-		} else {
-			_ = err
+		if !h.closed {
+			h.pmu.Lock() //send to upstream channel
+			h.errDone <- err
 		}
-		t.mu.Unlock()
+		h.mu.Unlock()
 	}
 }
 
-func (s *server) Listen() { //异步通知调用者什么时候连接被关闭（出现错误）	//立即结束
-	ipsocket := s.ipaddr + ":" + s.port
-	listener, err := net.Listen("tcp", ipsocket)
+func (s *server) Listen() { //Notifies the consumer when an error occurs ASYNCHRONOUSLY
+	listener, err := net.Listen("tcp", s.ipaddr)
 	if err != nil {
-		s.errDone <- err
+		s.mu.Lock()
+		s.errDone <- Errsocket{err, s.ipaddr}
 	}
 	s.listener = listener
 	go s.errDiversion()
@@ -128,10 +139,12 @@ func (s *server) Listen() { //异步通知调用者什么时候连接被关闭�
 	return
 }
 
-func handleListen(l net.Listener, s *server) { //cancelctx
+func handleListen(l net.Listener, s *server) {
+	fmt.Println("Start hL")
+	defer fmt.Println("->hL quit")
+	var wg sync.WaitGroup
 	ctx, cfunc := context.WithCancel(context.Background())
 	s.cancelfunc = cfunc
-	var wg sync.WaitGroup
 loop:
 	for {
 		select {
@@ -140,7 +153,8 @@ loop:
 		default:
 			conn, err := l.Accept()
 			if err != nil {
-				s.errDoneTry <- err
+				s.mu.Lock()
+				s.errDoneTry <- Errsocket{err, s.ipaddr}
 				break
 			}
 			if s.readDDL != 0 {
@@ -154,7 +168,7 @@ loop:
 				c:          conn,
 				delimiter:  s.delimiter,
 				errDone:    s.errDoneTry,
-				errDoneTry: make(chan error),
+				errDoneTry: make(chan Errsocket),
 				readfunc:   s.readfunc,
 				pmu:        &s.mu,
 			}
@@ -162,77 +176,81 @@ loop:
 			go handleConn(h, ctx, &wg)
 			wg.Add(1)
 		}
-	} //close conn at goroutine
-	wg.Wait()
+	}
+	wg.Wait() //All handleConn goroutines has exited, s.eDT will not be used anymore
 	close(s.errDoneTry)
 }
 
-func handleErr(err error) { //Not used yet, designed for handling errors with channel
-	if err == nil { //it will be blocked until user give a signal.
-		return
-	}
-
-}
-
 func handleConn(h *handleconn, parentctx context.Context, wg *sync.WaitGroup) {
-	defer fmt.Println("handleC quit")
-	var ctx context.Context
-	ctx, _ = context.WithCancel(parentctx) //TODO: if MAXLIVETIME is needed.
-	strReqChan := make(chan []byte)
-	readquit := make(chan struct{})
-	go read(h.c, h.delimiter, strReqChan, h.errDoneTry, readquit)
-
+	fmt.Println("Start hC")
+	defer fmt.Println("->hC quit")
+	ctx, _ := context.WithCancel(parentctx) //TODO: if MAXLIVETIME is needed.
+	strReqChan, readquit, quitcheck := make(chan []byte), make(chan struct{}), make(chan struct{})
+	defer func() {
+		err := h.c.Close()
+		<-quitcheck
+		if err != nil {
+			h.mu.Lock()
+			h.errDoneTry <- Errsocket{err, h.c.RemoteAddr().String()}
+		}
+		h.mu.Lock()
+		h.closed = true
+		close(h.errDoneTry)
+		h.mu.Unlock()
+		wg.Done()
+	}()
+	go read(h, strReqChan, readquit, quitcheck)
 	for {
 		select {
 		case <-ctx.Done(): //quit manually
-			h.mu.Lock()
-			h.c.Close()
 			close(readquit)
-			h.closed = true
-			//close(h.errDone)		//close listen.eDT will cause an err when mulit-dial connections
-			close(h.errDoneTry)
-			h.mu.Unlock()
-			wg.Done()
 			return
 		case strReq, ok := <-strReqChan: //read a data slice successfully
 			if !ok {
-				return //EOF TODO: does it need a check if strReq is empty.
+				return //EOF && d!=0
 			}
-			h.pmu.Lock()
+			h.pmu.Lock()              //s.mu
 			err := h.readfunc(strReq) //requires a lock from hL
 			h.pmu.Unlock()
 			if err != nil {
-				h.errDone <- err
+				h.mu.Lock()
+				h.errDoneTry <- Errsocket{err, h.c.RemoteAddr().String()}
 			}
 		}
 	}
 }
 
-func read(c net.Conn, d byte, strReqChan chan<- []byte, errChan chan<- error, quit chan struct{}) {
-	defer fmt.Println("read quit")
+func read(h *handleconn, strReqChan chan<- []byte, quit chan struct{}, quitcheck chan struct{}) {
+	fmt.Println("Start read")
+	defer fmt.Println("->read quit")
 	readBytes := make([]byte, 1)
 	for {
 		select {
 		case <-quit:
+			quitcheck <- struct{}{}
 			return
 		default:
 			var buffer bytes.Buffer
 			for {
-				_, err := c.Read(readBytes)
+				_, err := h.c.Read(readBytes)
 				if err != nil {
-					close(strReqChan)
-					if err != io.EOF {
-						errChan <- err
+					if h.delimiter == 0 {
+						strReqChan <- buffer.Bytes()
+					} else {
+						h.mu.Lock()
+						h.errDoneTry <- Errsocket{err, h.c.RemoteAddr().String()}
 					}
+					close(strReqChan)
+					quitcheck <- struct{}{}
 					return
 				}
 				readByte := readBytes[0]
-				if readByte == d {
+				if readByte == h.delimiter {
 					break
 				}
 				buffer.WriteByte(readByte)
 			}
-			if d == '\n' && buffer.Bytes()[len(buffer.Bytes())-1] == '\r' {
+			if h.delimiter == '\n' && buffer.Bytes()[len(buffer.Bytes())-1] == '\r' {
 				strReqChan <- buffer.Bytes()[:len(buffer.Bytes())-1]
 			} else {
 				strReqChan <- buffer.Bytes()
@@ -264,8 +282,16 @@ func struct2byte(t interface{}) []byte {
 	return *(*[]byte)(unsafe.Pointer(testBytes))
 }
 
-func Write(t interface{}) error {
+func WriteStruct(t interface{}, d byte) error {
 	data := struct2byte(t)
-	_ = data
+	if d != 0 {
+		data = append(data, d)
+	}
 	return nil
+}
+
+func handleErr(err error) { //Not used yet, designed for handling errors with channel
+	if err == nil { //it will be blocked until user give a signal.
+		return
+	}
 }
