@@ -42,16 +42,30 @@ type server struct {
 }
 
 type handleconn struct {
-	c         net.Conn
-	delimiter byte
-
+	c          net.Conn
+	d          byte
 	errDone    chan Errsocket
 	errDoneTry chan Errsocket
 	closed     *bool       //if errDone is closed
 	mu         *sync.Mutex //one upstreamChannel, one mutex, one flag
 	pmu        *sync.Mutex //lock readfunc
+	readfunc   func([]byte) error
+}
 
-	readfunc func([]byte) error
+type reader struct {
+	c          net.Conn
+	d          byte
+	mu         *sync.Mutex
+	errDoneTry chan Errsocket
+	strReqChan chan<- []byte
+}
+
+type eDer struct {
+	eD     chan Errsocket
+	closed *bool
+	eDT    chan Errsocket
+	mu     *sync.Mutex
+	pmu    *sync.Mutex
 }
 
 func NewServer(
@@ -77,6 +91,10 @@ func (s *server) ErrDone() <-chan Errsocket {
 	return s.errDone
 }
 
+/*
+will not wait for the rest of goroutines' error message.
+make sure all connections has exited successfully before doing this
+*/
 func (s *server) Cut() {
 	//fmt.Println("Start Cut")
 	//defer fmt.Println("->Cut")
@@ -91,38 +109,24 @@ func (s *server) Cut() {
 	s.cancelfunc()
 }
 
-func (s *server) errDiversion() {
+func errDiversion(eD *eDer) {
 	//when upstream channel is closed(by closed flag),
 	//following data will be received but discarded
 	//when eDT channel has closed, this goroutine will exit
-
-	fmt.Println("Start SeD")
-	defer fmt.Println("->SeD quit")
+	fmt.Println("Start eD")
+	defer fmt.Println("->eD quit")
 	for {
-		err, ok := <-s.errDoneTry
-		if !ok { //errDoneTry has closed
-			return
-		}
-		if !s.closed { //errDone has NOT closed
-			s.errDone <- err
-		}
-		s.mu.Unlock() //locked at error sender
-	}
-}
-
-func (h *handleconn) errDiversion() {
-	fmt.Println("Start HeD")
-	defer fmt.Println("->HeD quit")
-	for {
-		err, ok := <-h.errDoneTry
+		err, ok := <-eD.eDT
 		if !ok {
 			return
 		}
-		if !*h.closed {
-			h.pmu.Lock() //send to upstream channel
-			h.errDone <- err
+		if !*eD.closed {
+			if eD.pmu != nil {
+				eD.pmu.Lock() //send to upstream channel
+			}
+			eD.eD <- err
 		}
-		h.mu.Unlock()
+		eD.mu.Unlock()
 	}
 }
 
@@ -132,12 +136,19 @@ func (s *server) Listen() error { //Notifies the consumer when an error occurs A
 		return err
 	}
 	s.listener = listener
-	go s.errDiversion()
-	go handleListen(listener, s)
+	go errDiversion(&eDer{
+		eD:     s.errDone,
+		closed: &s.closed,
+		eDT:    s.errDoneTry,
+		mu:     &s.mu,
+		pmu:    nil,
+	})
+	//go s.errDiversion()
+	go handleListen(s, listener)
 	return nil
 }
 
-func handleListen(l net.Listener, s *server) {
+func handleListen(s *server, l net.Listener) {
 	fmt.Println("Start hL")
 	defer fmt.Println("->hL quit")
 
@@ -147,19 +158,25 @@ func handleListen(l net.Listener, s *server) {
 		mu4hC      sync.Mutex
 	)
 
+	defer func() {
+		mu4hC.Lock()
+		uC4hC = true
+		close(s.errDoneTry)
+		mu4hC.Unlock()
+	}()
+
 	s.cancelfunc = cfunc
 
-loop:
 	for {
 		select {
 		case <-ctx.Done():
-			break loop
+			return
 		default:
 			conn, err := l.Accept()
 			if err != nil {
 				s.mu.Lock()
 				s.errDoneTry <- Errsocket{err, s.ipaddr}
-				break
+				return
 			}
 			if s.readDDL != 0 {
 				conn.SetReadDeadline(time.Now().Add(s.readDDL))
@@ -170,43 +187,53 @@ loop:
 
 			h := &handleconn{
 				c:          conn,
-				delimiter:  s.delimiter,
+				d:          s.delimiter,
 				errDone:    s.errDoneTry,
+				errDoneTry: make(chan Errsocket),
 				closed:     &uC4hC,
 				mu:         &mu4hC,
-				errDoneTry: make(chan Errsocket),
 				readfunc:   s.readfunc,
 				pmu:        &s.mu,
 			}
-			go h.errDiversion()
+			go errDiversion(&eDer{
+				eD:     h.errDone,
+				closed: &uC4hC,
+				eDT:    h.errDoneTry,
+				mu:     &mu4hC,
+				pmu:    &s.mu,
+			})
 			go handleConn(h, ctx)
 		}
 	}
-	mu4hC.Lock()
-	uC4hC = true
-	close(s.errDoneTry)
-	mu4hC.Unlock()
 }
 
 func handleConn(h *handleconn, parentctx context.Context) {
 	fmt.Println("Start hC")
 	defer fmt.Println("->hC quit")
 	ctx, _ := context.WithCancel(parentctx) //TODO: if MAXLIVETIME is needed.
-	strReqChan, readquit, quitcheck := make(chan []byte), make(chan struct{}), make(chan struct{})
+	strReqChan := make(chan []byte)
+
 	defer func() {
 		err := h.c.Close()
-		<-quitcheck //wait until read goroutine exited successfully
+		<-strReqChan
 		if err != nil {
 			h.mu.Lock()
 			h.errDoneTry <- Errsocket{err, h.c.RemoteAddr().String()}
 		}
 		close(h.errDoneTry)
 	}()
-	go read(h, strReqChan, readquit, quitcheck)
+
+	go read(&reader{
+		c:          h.c,
+		d:          h.d,
+		mu:         h.mu,
+		errDoneTry: h.errDoneTry,
+		strReqChan: strReqChan,
+	})
+
 	for {
 		select {
 		case <-ctx.Done(): //quit manually
-			close(readquit)
 			return
 		case strReq, ok := <-strReqChan: //read a data slice successfully
 			if !ok {
@@ -223,42 +250,43 @@ func handleConn(h *handleconn, parentctx context.Context) {
 	}
 }
 
-func read(h *handleconn, strReqChan chan<- []byte, quit chan struct{}, quitcheck chan struct{}) {
+/*
+1. No delimiter with closed connection:						DO readfunc with string read.
+2. Delimiter with closed connection(no delimiter found): 	EOF warning.
+3. No delimiter with healthy connection:					waiting for closed.
+4. Delimiter with healthy connection:						waiting for delimiter to DO readfunc
+5. No delimiter with CUT: 									DO NOTHING.
+6. Delimiter with CUT: 										DO NOTHING.
+*/
+func read(r *reader) {
 	fmt.Println("Start read")
 	defer fmt.Println("->read quit")
+	defer func() {
+		close(r.strReqChan)
+	}()
 	readBytes := make([]byte, 1)
+	var buffer bytes.Buffer
 	for {
-		select {
-		case <-quit:
-			quitcheck <- struct{}{}
-			return
-		default:
-			var buffer bytes.Buffer
-			for {
-				_, err := h.c.Read(readBytes)
-				if err != nil {
-					if h.delimiter == 0 {
-						strReqChan <- buffer.Bytes()
-					} else {
-						h.mu.Lock()
-						h.errDoneTry <- Errsocket{err, h.c.RemoteAddr().String()}
-					}
-					close(strReqChan)
-					quitcheck <- struct{}{}
-					return
-				}
-				readByte := readBytes[0]
-				if readByte == h.delimiter {
-					break
-				}
-				buffer.WriteByte(readByte)
-			}
-			if h.delimiter == '\n' && buffer.Bytes()[len(buffer.Bytes())-1] == '\r' {
-				strReqChan <- buffer.Bytes()[:len(buffer.Bytes())-1]
+		_, err := r.c.Read(readBytes)
+		if err != nil {
+			if r.d == 0 {
+				r.strReqChan <- buffer.Bytes()
 			} else {
-				strReqChan <- buffer.Bytes()
+				r.mu.Lock()
+				r.errDoneTry <- Errsocket{err, r.c.RemoteAddr().String()}
 			}
+			return
 		}
+		readByte := readBytes[0]
+		if readByte == r.d {
+			break
+		}
+		buffer.WriteByte(readByte)
+	}
+	if r.d == '\n' && buffer.Bytes()[len(buffer.Bytes())-1] == '\r' {
+		r.strReqChan <- buffer.Bytes()[:len(buffer.Bytes())-1]
+	} else {
+		r.strReqChan <- buffer.Bytes()
 	}
 }
 
