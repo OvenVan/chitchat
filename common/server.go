@@ -47,8 +47,8 @@ type handleconn struct {
 
 	errDone    chan Errsocket
 	errDoneTry chan Errsocket
-	closed     bool //if errDone is closed
-	mu         sync.Mutex
+	closed     *bool       //if errDone is closed
+	mu         *sync.Mutex //one upstreamChannel, one mutex, one flag
 	pmu        *sync.Mutex //lock readfunc
 
 	readfunc func([]byte) error
@@ -82,11 +82,10 @@ func (s *server) Cut() {
 	//defer fmt.Println("->Cut")
 	s.mu.Lock()
 	err := s.listener.Close()
-	s.closed = true
 	if err != nil {
-		s.mu.Lock()
 		s.errDone <- Errsocket{err, s.ipaddr}
 	}
+	s.closed = true
 	close(s.errDone)
 	s.mu.Unlock()
 	s.cancelfunc()
@@ -119,7 +118,7 @@ func (h *handleconn) errDiversion() {
 		if !ok {
 			return
 		}
-		if !h.closed {
+		if !*h.closed {
 			h.pmu.Lock() //send to upstream channel
 			h.errDone <- err
 		}
@@ -127,24 +126,29 @@ func (h *handleconn) errDiversion() {
 	}
 }
 
-func (s *server) Listen() { //Notifies the consumer when an error occurs ASYNCHRONOUSLY
+func (s *server) Listen() error { //Notifies the consumer when an error occurs ASYNCHRONOUSLY
 	listener, err := net.Listen("tcp", s.ipaddr)
 	if err != nil {
-		s.mu.Lock()
-		s.errDone <- Errsocket{err, s.ipaddr}
+		return err
 	}
 	s.listener = listener
 	go s.errDiversion()
 	go handleListen(listener, s)
-	return
+	return nil
 }
 
 func handleListen(l net.Listener, s *server) {
 	fmt.Println("Start hL")
 	defer fmt.Println("->hL quit")
-	var wg sync.WaitGroup
-	ctx, cfunc := context.WithCancel(context.Background())
+
+	var (
+		ctx, cfunc = context.WithCancel(context.Background())
+		uC4hC      = false //upstreamChannel for handleConnection
+		mu4hC      sync.Mutex
+	)
+
 	s.cancelfunc = cfunc
+
 loop:
 	for {
 		select {
@@ -168,36 +172,35 @@ loop:
 				c:          conn,
 				delimiter:  s.delimiter,
 				errDone:    s.errDoneTry,
+				closed:     &uC4hC,
+				mu:         &mu4hC,
 				errDoneTry: make(chan Errsocket),
 				readfunc:   s.readfunc,
 				pmu:        &s.mu,
 			}
 			go h.errDiversion()
-			go handleConn(h, ctx, &wg)
-			wg.Add(1)
+			go handleConn(h, ctx)
 		}
 	}
-	wg.Wait() //All handleConn goroutines has exited, s.eDT will not be used anymore
+	mu4hC.Lock()
+	uC4hC = true
 	close(s.errDoneTry)
+	mu4hC.Unlock()
 }
 
-func handleConn(h *handleconn, parentctx context.Context, wg *sync.WaitGroup) {
+func handleConn(h *handleconn, parentctx context.Context) {
 	fmt.Println("Start hC")
 	defer fmt.Println("->hC quit")
 	ctx, _ := context.WithCancel(parentctx) //TODO: if MAXLIVETIME is needed.
 	strReqChan, readquit, quitcheck := make(chan []byte), make(chan struct{}), make(chan struct{})
 	defer func() {
 		err := h.c.Close()
-		<-quitcheck
+		<-quitcheck //wait until read goroutine exited successfully
 		if err != nil {
 			h.mu.Lock()
 			h.errDoneTry <- Errsocket{err, h.c.RemoteAddr().String()}
 		}
-		h.mu.Lock()
-		h.closed = true
 		close(h.errDoneTry)
-		h.mu.Unlock()
-		wg.Done()
 	}()
 	go read(h, strReqChan, readquit, quitcheck)
 	for {
