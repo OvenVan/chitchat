@@ -41,6 +41,20 @@ type server struct {
 	cancelfunc context.CancelFunc
 }
 
+type client struct {
+	ipaddr    string
+	dialDDL   time.Duration
+	delimiter byte
+
+	readfunc func([]byte, net.Conn) error
+
+	eDer
+	eDerfunc eDinitfunc
+
+	c          net.Conn
+	cancelfunc context.CancelFunc
+}
+
 type handleConner struct {
 	c        net.Conn
 	d        byte
@@ -86,12 +100,40 @@ func NewServer(
 	return s
 }
 
+func NewClient(
+	ipaddrsocket string,
+	delim byte, readfunc func([]byte, net.Conn) error) *client {
+
+	c := &client{
+		ipaddr:    ipaddrsocket,
+		dialDDL:   0,
+		delimiter: delim,
+		readfunc:  readfunc,
+		eDer: eDer{
+			eU:     make(chan Errsocket),
+			closed: false,
+			mu:     new(sync.Mutex),
+			pmu:    nil,
+		},
+	}
+	c.eDerfunc = errDiversion(&c.eDer)
+	return c
+}
+
 func (s *server) SetDeadLine(rDDL time.Duration, wDDL time.Duration) {
 	s.readDDL, s.writeDDL = rDDL, wDDL
 }
 
+func (c *client) SetDeadLine(dDDL time.Duration) {
+	c.dialDDL = dDDL
+}
+
 func (s *server) ErrChan() <-chan Errsocket {
 	return s.eU
+}
+
+func (c *client) ErrChan() <-chan Errsocket {
+	return c.eU
 }
 
 /*
@@ -112,6 +154,10 @@ func (s *server) Cut() {
 	close(s.eU)
 	s.mu.Unlock()
 	s.cancelfunc()
+}
+
+func (c *client) Close() {
+	//TODO: client.close
 }
 
 func errDiversion(eD *eDer) func(eC chan Errsocket) {
@@ -146,6 +192,37 @@ func (s *server) Listen() error { //Notifies the consumer when an error occurs A
 	eC := make(chan Errsocket)
 	go s.eDerfunc(eC)
 	go handleListen(s, eC)
+	return nil
+}
+
+func (c *client) Dial() error {
+	var (
+		err        error
+		conn       net.Conn
+		ctx, cfunc = context.WithCancel(context.Background())
+		eC         = make(chan Errsocket)
+	)
+
+	defer close(eC)
+
+	c.cancelfunc = cfunc
+
+	if c.dialDDL == 0 {
+		c.c, err = net.Dial("tcp", c.ipaddr)
+	} else {
+		c.c, err = net.DialTimeout("tcp", c.ipaddr, c.dialDDL)
+	}
+	if err != nil {
+		return err
+	}
+	go c.eDerfunc(eC)
+	go handleConn(&handleConner{
+		c:        conn,
+		d:        c.delimiter,
+		readfunc: c.readfunc,
+		mu:       c.mu,
+	}, ctx, eC)
+
 	return nil
 }
 
