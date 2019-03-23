@@ -44,7 +44,7 @@ type Server struct {
 }
 
 type Client struct {
-	ipremote  string
+	ipaddr    string
 	dialDDL   time.Duration
 	delimiter byte
 
@@ -96,7 +96,8 @@ func NewServer(
 			mu:     new(sync.Mutex),
 			pmu:    nil,
 		},
-		readfunc: readfunc,
+		remoteMap: make(map[string]context.CancelFunc),
+		readfunc:  readfunc,
 	}
 	s.eDerfunc = errDiversion(&s.eDer)
 	return s
@@ -107,7 +108,7 @@ func NewClient(
 	delim byte, readfunc func([]byte, net.Conn) error) *Client {
 
 	c := &Client{
-		ipremote:  ipremotesocket,
+		ipaddr:    ipremotesocket,
 		dialDDL:   0,
 		delimiter: delim,
 		readfunc:  readfunc,
@@ -154,12 +155,8 @@ func (s *Server) Cut() {
 	s.cancelfunc()
 }
 
-func (c *Client) Close() {
+func (c *Client) Close() { //this function will always executed(once or twice)
 	c.mu.Lock()
-	err := c.c.Close()
-	if err != nil {
-		c.eU <- Errsocket{err, c.c.RemoteAddr().String()}
-	}
 	c.closed = true
 	close(c.eU)
 	c.mu.Unlock()
@@ -176,7 +173,7 @@ func errDiversion(eD *eDer) func(eC chan Errsocket) {
 		for {
 			err, ok := <-eC
 			if !ok {
-				return
+				return // consider multi-conn in one uC, i cannot close uC now
 			}
 			if !eD.closed {
 				if eD.pmu != nil {
@@ -211,9 +208,9 @@ func (c *Client) Dial() error {
 	c.cancelfunc = cfunc
 
 	if c.dialDDL == 0 {
-		c.c, err = net.Dial("tcp", c.ipremote)
+		c.c, err = net.Dial("tcp", c.ipaddr)
 	} else {
-		c.c, err = net.DialTimeout("tcp", c.ipremote, c.dialDDL)
+		c.c, err = net.DialTimeout("tcp", c.ipaddr, c.dialDDL)
 	}
 	if err != nil {
 		return err
@@ -224,7 +221,7 @@ func (c *Client) Dial() error {
 		d:        c.delimiter,
 		readfunc: c.readfunc,
 		mu:       c.mu,
-	}, ctx, eC)
+	}, ctx, eC, &c.eDer)
 
 	return nil
 }
@@ -249,13 +246,15 @@ func handleListen(s *Server, eC chan Errsocket) {
 				eC <- Errsocket{err, s.ipaddr}
 				return
 			}
-
 			if s.readDDL != 0 {
 				_ = conn.SetReadDeadline(time.Now().Add(s.readDDL))
 			}
 			if s.writeDDL != 0 {
 				_ = conn.SetWriteDeadline(time.Now().Add(s.writeDDL))
 			}
+
+			cctx, childfunc := context.WithCancel(ctx)          //TODO: if MAXLIVETIME is needed.
+			s.remoteMap[conn.RemoteAddr().String()] = childfunc //TODO: childfunc are the same???
 
 			ceC := make(chan Errsocket)
 			go s.eDerfunc(ceC)
@@ -264,24 +263,31 @@ func handleListen(s *Server, eC chan Errsocket) {
 				d:        s.delimiter,
 				readfunc: s.readfunc,
 				mu:       s.mu,
-			}, ctx, ceC)
+			}, cctx, ceC, nil)
 		}
 	}
 }
 
-func handleConn(h *handleConner, parentctx context.Context, eC chan Errsocket) {
-	fmt.Println("Start hC")
-	defer fmt.Println("->hC quit")
-	ctx, _ := context.WithCancel(parentctx) //TODO: if MAXLIVETIME is needed.
+//what is eD: This is a patch for the Client's abnormal exit(without close()) that can turn off the error UpstreamChannel.
+func handleConn(h *handleConner, ctx context.Context, eC chan Errsocket, eD *eDer) {
+	fmt.Println("Start hC:", h.c.LocalAddr(), "->", h.c.RemoteAddr())
+	defer fmt.Println("->hC quit", h.c.LocalAddr(), "->", h.c.RemoteAddr())
 	strReqChan := make(chan []byte)
 
 	defer func() {
+		if eD != nil && !eD.closed { //PATCH
+			h.mu.Lock()
+			eD.closed = true
+			close(eD.eU)
+			h.mu.Unlock()
+		}
 		err := h.c.Close()
 		<-strReqChan
 		if err != nil {
 			h.mu.Lock()
 			eC <- Errsocket{err, h.c.RemoteAddr().String()}
 		}
+
 		close(eC)
 	}()
 
@@ -323,8 +329,8 @@ Server:
 6. Delimiter with local closed: 									DO NOTHING.
 */
 func read(r *reader, eC chan Errsocket) {
-	fmt.Println("Start read")
-	defer fmt.Println("->read quit")
+	fmt.Println("Start read", r.c.LocalAddr(), "->", r.c.RemoteAddr())
+	defer fmt.Println("->read quit", r.c.LocalAddr(), "->", r.c.RemoteAddr())
 	defer func() {
 		close(r.strReqChan)
 	}()
@@ -343,7 +349,7 @@ func read(r *reader, eC chan Errsocket) {
 				return
 			}
 			readByte := readBytes[0]
-			if readByte == r.d {
+			if r.d != 0 && readByte == r.d {
 				break
 			}
 			buffer.WriteByte(readByte)

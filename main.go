@@ -13,20 +13,11 @@ type Test struct {
 	Value int
 }
 
-//func readfunc(s []byte, x common.Server) error {
-//	var t = *(**Test)(unsafe.Pointer(&s))
-//	fmt.Println("from ", , ": data is : ", t)
-//	if t.Value<100 {
-//		return common.Write(c, Test{Id: t.Id + 1, Value: t.Value * 2}, '\n')
-//	}
-//	return nil
-//}
-
 func Creadfunc(s []byte, c net.Conn) error {
 	var t = *(**Test)(unsafe.Pointer(&s))
 	fmt.Println("from ", c.RemoteAddr(), ": data is : ", t)
 	if t.Value < 100 {
-		return common.Write(c, Test{Id: t.Id + 1, Value: t.Value * 2}, '\n')
+		return common.Write(c, Test{Id: t.Id + 1, Value: t.Value * 3}, '\n')
 	} else {
 
 	}
@@ -50,20 +41,19 @@ func main() {
 	fmt.Println(server.Listen())
 	go DaemonListen(server.ErrChan())
 
-	client := common.NewClient("127.0.0.1:8085", '\n', Creadfunc)
-	fmt.Println(client.Dial())
-	go DaemonListen(client.ErrChan())
+	client1 := common.NewClient("127.0.0.1:8085", '\n', Creadfunc)
+	fmt.Println(client1.Dial())
+	go DaemonListen(client1.ErrChan())
 
-	//common.Write()
-	fmt.Println("write err:", client.Write(Test{Id: 0, Value: 1}))
-	//client.Close()
-	//c1, _ := net.Dial("tcp", "127.0.0.1:8085")
-	//c2, _ := net.Dial("tcp", "127.0.0.1:8085")
-	//c2.Write([]byte("hello world c2"))
-	//c1.Write([]byte("hello world c1"))
-	//c1.Close()
-	//c2.Close()
-	//time.Sleep(time.Millisecond * 1000)
-	//server.Cut()
-	time.Sleep(time.Hour)
+	client2 := common.NewClient("127.0.0.1:8085", '\n', Creadfunc)
+	fmt.Println(client2.Dial())
+	go DaemonListen(client2.ErrChan())
+
+	fmt.Println("write err:", client1.Write(Test{Id: 0, Value: 2}))
+	fmt.Println("write err:", client2.Write(Test{Id: 0, Value: 3}))
+	time.Sleep(time.Second)
+	client1.Close()
+	client2.Close()
+	time.Sleep(time.Second)
+	server.Cut()
 }
