@@ -1,11 +1,11 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"github.com/ovenvan/chitchat/common"
 	"net"
 	"time"
+	"unsafe"
 )
 
 type Test struct {
@@ -13,14 +13,24 @@ type Test struct {
 	Value int
 }
 
-func readfunc(s []byte, c net.Conn) error {
-	//fmt.Println(string(s))
-	for _, v := range s {
-		fmt.Print(string(v))
-		time.Sleep(time.Millisecond * 10)
+//func readfunc(s []byte, x common.Server) error {
+//	var t = *(**Test)(unsafe.Pointer(&s))
+//	fmt.Println("from ", , ": data is : ", t)
+//	if t.Value<100 {
+//		return common.Write(c, Test{Id: t.Id + 1, Value: t.Value * 2}, '\n')
+//	}
+//	return nil
+//}
+
+func Creadfunc(s []byte, c net.Conn) error {
+	var t = *(**Test)(unsafe.Pointer(&s))
+	fmt.Println("from ", c.RemoteAddr(), ": data is : ", t)
+	if t.Value < 100 {
+		return common.Write(c, Test{Id: t.Id + 1, Value: t.Value * 2}, '\n')
+	} else {
+
 	}
-	fmt.Println()
-	return errors.New("Custom err")
+	return nil
 }
 
 func DaemonListen(err <-chan common.Errsocket) {
@@ -36,21 +46,24 @@ func DaemonListen(err <-chan common.Errsocket) {
 }
 
 func main() {
-	//data := common.Struct2byte(Test{3, 100})
-	//var ptestStruct *Test = *(**Test)(unsafe.Pointer(&data))
-	//fmt.Println("ptestStruct.data is : ", ptestStruct)
-	x := common.NewServer("127.0.0.1:8085",
-		0,
-		readfunc)
-	fmt.Println(x.Listen())
-	go DaemonListen(x.ErrChan())
-	c1, _ := net.Dial("tcp", "127.0.0.1:8085")
-	c2, _ := net.Dial("tcp", "127.0.0.1:8085")
-	c2.Write([]byte("hello world c2"))
-	c1.Write([]byte("hello world c1"))
-	c1.Close()
-	c2.Close()
-	time.Sleep(time.Millisecond * 1000)
-	x.Cut() //situation:还在等待阅读时被强行关闭
+	server := common.NewServer("127.0.0.1:8085", '\n', Creadfunc)
+	fmt.Println(server.Listen())
+	go DaemonListen(server.ErrChan())
+
+	client := common.NewClient("127.0.0.1:8085", '\n', Creadfunc)
+	fmt.Println(client.Dial())
+	go DaemonListen(client.ErrChan())
+
+	//common.Write()
+	fmt.Println("write err:", client.Write(Test{Id: 0, Value: 1}))
+	//client.Close()
+	//c1, _ := net.Dial("tcp", "127.0.0.1:8085")
+	//c2, _ := net.Dial("tcp", "127.0.0.1:8085")
+	//c2.Write([]byte("hello world c2"))
+	//c1.Write([]byte("hello world c1"))
+	//c1.Close()
+	//c2.Close()
+	//time.Sleep(time.Millisecond * 1000)
+	//server.Cut()
 	time.Sleep(time.Hour)
 }

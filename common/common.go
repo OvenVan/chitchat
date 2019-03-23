@@ -24,7 +24,7 @@ type Errsocket struct {
 	Addr string
 }
 
-type server struct {
+type Server struct {
 	//unchangable data
 	ipaddr   string
 	readDDL  time.Duration
@@ -32,6 +32,8 @@ type server struct {
 	//if delimiter is 0, then read until it's EOF
 	delimiter byte
 	readfunc  func([]byte, net.Conn) error
+
+	remoteMap map[string]context.CancelFunc
 
 	//under protected data
 	eDer
@@ -41,8 +43,8 @@ type server struct {
 	cancelfunc context.CancelFunc
 }
 
-type client struct {
-	ipaddr    string
+type Client struct {
+	ipremote  string
 	dialDDL   time.Duration
 	delimiter byte
 
@@ -81,9 +83,9 @@ type eDer struct {
 
 func NewServer(
 	ipaddrsocket string,
-	delim byte, readfunc func([]byte, net.Conn) error) *server {
+	delim byte, readfunc func([]byte, net.Conn) error) *Server {
 
-	s := &server{
+	s := &Server{
 		ipaddr:    ipaddrsocket,
 		readDDL:   0,
 		writeDDL:  0,
@@ -101,11 +103,11 @@ func NewServer(
 }
 
 func NewClient(
-	ipaddrsocket string,
-	delim byte, readfunc func([]byte, net.Conn) error) *client {
+	ipremotesocket string,
+	delim byte, readfunc func([]byte, net.Conn) error) *Client {
 
-	c := &client{
-		ipaddr:    ipaddrsocket,
+	c := &Client{
+		ipremote:  ipremotesocket,
 		dialDDL:   0,
 		delimiter: delim,
 		readfunc:  readfunc,
@@ -120,19 +122,19 @@ func NewClient(
 	return c
 }
 
-func (s *server) SetDeadLine(rDDL time.Duration, wDDL time.Duration) {
+func (s *Server) SetDeadLine(rDDL time.Duration, wDDL time.Duration) {
 	s.readDDL, s.writeDDL = rDDL, wDDL
 }
 
-func (c *client) SetDeadLine(dDDL time.Duration) {
+func (c *Client) SetDeadLine(dDDL time.Duration) {
 	c.dialDDL = dDDL
 }
 
-func (s *server) ErrChan() <-chan Errsocket {
+func (s *Server) ErrChan() <-chan Errsocket {
 	return s.eU
 }
 
-func (c *client) ErrChan() <-chan Errsocket {
+func (c *Client) ErrChan() <-chan Errsocket {
 	return c.eU
 }
 
@@ -140,24 +142,28 @@ func (c *client) ErrChan() <-chan Errsocket {
 will not wait for the rest of goroutines' error message.
 make sure all connections has exited successfully before doing this
 */
-func (s *server) Cut() {
-	//fmt.Println("Start Cut")
-	//defer fmt.Println("->Cut")
+func (s *Server) Cut() {
 	s.mu.Lock()
-
 	err := s.l.Close()
 	if err != nil {
 		s.eU <- Errsocket{err, s.ipaddr}
 	}
-	s.eDer.closed = true
 	s.closed = true
 	close(s.eU)
 	s.mu.Unlock()
 	s.cancelfunc()
 }
 
-func (c *client) Close() {
-	//TODO: client.close
+func (c *Client) Close() {
+	c.mu.Lock()
+	err := c.c.Close()
+	if err != nil {
+		c.eU <- Errsocket{err, c.c.RemoteAddr().String()}
+	}
+	c.closed = true
+	close(c.eU)
+	c.mu.Unlock()
+	c.cancelfunc()
 }
 
 func errDiversion(eD *eDer) func(eC chan Errsocket) {
@@ -183,7 +189,7 @@ func errDiversion(eD *eDer) func(eC chan Errsocket) {
 	}
 }
 
-func (s *server) Listen() error { //Notifies the consumer when an error occurs ASYNCHRONOUSLY
+func (s *Server) Listen() error { //Notifies the consumer when an error occurs ASYNCHRONOUSLY
 	listener, err := net.Listen("tcp", s.ipaddr)
 	if err != nil {
 		return err
@@ -195,29 +201,26 @@ func (s *server) Listen() error { //Notifies the consumer when an error occurs A
 	return nil
 }
 
-func (c *client) Dial() error {
+func (c *Client) Dial() error {
 	var (
 		err        error
-		conn       net.Conn
 		ctx, cfunc = context.WithCancel(context.Background())
 		eC         = make(chan Errsocket)
 	)
 
-	defer close(eC)
-
 	c.cancelfunc = cfunc
 
 	if c.dialDDL == 0 {
-		c.c, err = net.Dial("tcp", c.ipaddr)
+		c.c, err = net.Dial("tcp", c.ipremote)
 	} else {
-		c.c, err = net.DialTimeout("tcp", c.ipaddr, c.dialDDL)
+		c.c, err = net.DialTimeout("tcp", c.ipremote, c.dialDDL)
 	}
 	if err != nil {
 		return err
 	}
 	go c.eDerfunc(eC)
 	go handleConn(&handleConner{
-		c:        conn,
+		c:        c.c,
 		d:        c.delimiter,
 		readfunc: c.readfunc,
 		mu:       c.mu,
@@ -226,7 +229,7 @@ func (c *client) Dial() error {
 	return nil
 }
 
-func handleListen(s *server, eC chan Errsocket) {
+func handleListen(s *Server, eC chan Errsocket) {
 	fmt.Println("Start hL")
 	defer fmt.Println("->hL quit")
 
@@ -247,17 +250,15 @@ func handleListen(s *server, eC chan Errsocket) {
 				return
 			}
 
-			ceC := make(chan Errsocket)
-
 			if s.readDDL != 0 {
-				conn.SetReadDeadline(time.Now().Add(s.readDDL))
+				_ = conn.SetReadDeadline(time.Now().Add(s.readDDL))
 			}
 			if s.writeDDL != 0 {
-				conn.SetWriteDeadline(time.Now().Add(s.writeDDL))
+				_ = conn.SetWriteDeadline(time.Now().Add(s.writeDDL))
 			}
 
+			ceC := make(chan Errsocket)
 			go s.eDerfunc(ceC)
-
 			go handleConn(&handleConner{
 				c:        conn,
 				d:        s.delimiter,
@@ -299,24 +300,27 @@ func handleConn(h *handleConner, parentctx context.Context, eC chan Errsocket) {
 			if !ok {
 				return //EOF && d!=0
 			}
-			h.mu.Lock()                    //s.mu
-			err := h.readfunc(strReq, h.c) //requires a lock from hL
-			h.mu.Unlock()
-			if err != nil {
-				h.mu.Lock()
-				eC <- Errsocket{err, h.c.RemoteAddr().String()}
+			if h.readfunc != nil {
+				h.mu.Lock()                    //s.mu
+				err := h.readfunc(strReq, h.c) //requires a lock from hL
+				h.mu.Unlock()
+				if err != nil {
+					h.mu.Lock()
+					eC <- Errsocket{err, h.c.RemoteAddr().String()}
+				}
 			}
 		}
 	}
 }
 
 /*
-1. No delimiter with closed connection:						DO readfunc with string read.
-2. Delimiter with closed connection(no delimiter found): 	EOF warning.
-3. No delimiter with healthy connection:					waiting for closed.
-4. Delimiter with healthy connection:						waiting for delimiter to DO readfunc
-5. No delimiter with CUT: 									DO NOTHING.
-6. Delimiter with CUT: 										DO NOTHING.
+Server:
+1. No delimiter with remoted closed connection:						DO readfunc with string read.
+2. Delimiter with remoted closed connection(no delimiter found): 	EOF warning.
+3. No delimiter with healthy connection:							waiting for closed.
+4. Delimiter with healthy connection:								waiting for delimiter to DO readfunc
+5. No delimiter with local closed: 									DO NOTHING.
+6. Delimiter with local closed: 									DO NOTHING.
 */
 func read(r *reader, eC chan Errsocket) {
 	fmt.Println("Start read")
@@ -325,29 +329,44 @@ func read(r *reader, eC chan Errsocket) {
 		close(r.strReqChan)
 	}()
 	readBytes := make([]byte, 1)
-	var buffer bytes.Buffer
 	for {
-		_, err := r.c.Read(readBytes)
-		if err != nil {
-			if r.d == 0 {
-				r.strReqChan <- buffer.Bytes()
-			} else {
-				r.mu.Lock()
-				eC <- Errsocket{err, r.c.RemoteAddr().String()}
+		var buffer bytes.Buffer
+		for {
+			_, err := r.c.Read(readBytes)
+			if err != nil {
+				if r.d == 0 {
+					r.strReqChan <- buffer.Bytes()
+				} else {
+					r.mu.Lock()
+					eC <- Errsocket{err, r.c.RemoteAddr().String()}
+				}
+				return
 			}
-			return
+			readByte := readBytes[0]
+			if readByte == r.d {
+				break
+			}
+			buffer.WriteByte(readByte)
 		}
-		readByte := readBytes[0]
-		if readByte == r.d {
-			break
+		if r.d == '\n' && buffer.Bytes()[len(buffer.Bytes())-1] == '\r' {
+			r.strReqChan <- buffer.Bytes()[:len(buffer.Bytes())-1]
+		} else {
+			r.strReqChan <- buffer.Bytes()
 		}
-		buffer.WriteByte(readByte)
 	}
-	if r.d == '\n' && buffer.Bytes()[len(buffer.Bytes())-1] == '\r' {
-		r.strReqChan <- buffer.Bytes()[:len(buffer.Bytes())-1]
-	} else {
-		r.strReqChan <- buffer.Bytes()
+}
+
+func (t *Client) Write(i interface{}) error {
+	return Write(t.c, i, t.delimiter)
+}
+
+func Write(c net.Conn, i interface{}, d byte) error {
+	data := Struct2byte(i)
+	if d != 0 {
+		data = append(data, d)
 	}
+	_, err := c.Write(data)
+	return err
 }
 
 //---------------------------
@@ -358,7 +377,7 @@ type sliceMock struct {
 	cap  int
 }
 
-func struct2byte(t interface{}) []byte {
+func Struct2byte(t interface{}) []byte {
 	var testStruct = &t
 	Len := unsafe.Sizeof(*testStruct)
 
@@ -371,18 +390,4 @@ func struct2byte(t interface{}) []byte {
 		len:  int(Len),
 	}
 	return *(*[]byte)(unsafe.Pointer(testBytes))
-}
-
-func WriteStruct(t interface{}, d byte) error {
-	data := struct2byte(t)
-	if d != 0 {
-		data = append(data, d)
-	}
-	return nil
-}
-
-func handleErr(err error) { //Not used yet, designed for handling errors with channel
-	if err == nil { //it will be blocked until user give a signal.
-		return
-	}
 }
