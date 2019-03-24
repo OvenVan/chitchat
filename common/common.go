@@ -3,6 +3,7 @@ package common
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"reflect"
 	"sync"
@@ -23,6 +24,9 @@ type Errsocket struct {
 	Addr string
 }
 
+type ServerReadFunc func([]byte, *Server) error
+type ClientReadFunc func([]byte, *Client) error
+
 type Server struct {
 	//unchangable data
 	ipaddr   string
@@ -30,7 +34,8 @@ type Server struct {
 	writeDDL time.Duration
 	//if delimiter is 0, then read until it's EOF
 	delimiter byte
-	readfunc  func([]byte, net.Conn) error
+	readfunc  ServerReadFunc
+	//readfunc  func([]byte, net.Conn) error
 
 	remoteMap map[string]context.CancelFunc
 
@@ -40,6 +45,8 @@ type Server struct {
 
 	l          net.Listener
 	cancelfunc context.CancelFunc
+
+	currentConn net.Conn
 }
 
 type Client struct {
@@ -47,7 +54,7 @@ type Client struct {
 	dialDDL   time.Duration
 	delimiter byte
 
-	readfunc func([]byte, net.Conn) error
+	readfunc ClientReadFunc
 
 	eDer
 	eDerfunc eDinitfunc
@@ -56,11 +63,18 @@ type Client struct {
 	cancelfunc context.CancelFunc
 }
 
-type handleConner struct {
+type hConnerServer struct {
 	c        net.Conn
 	d        byte
 	mu       *sync.Mutex //lock readfunc
-	readfunc func([]byte, net.Conn) error
+	readfunc ServerReadFunc
+}
+
+type hConnerClient struct {
+	c        net.Conn
+	d        byte
+	mu       *sync.Mutex //lock readfunc
+	readfunc ClientReadFunc
 }
 
 type reader struct {
@@ -82,7 +96,7 @@ type eDer struct {
 
 func NewServer(
 	ipaddrsocket string,
-	delim byte, readfunc func([]byte, net.Conn) error) *Server {
+	delim byte, readfunc ServerReadFunc) *Server {
 
 	s := &Server{
 		ipaddr:    ipaddrsocket,
@@ -104,7 +118,7 @@ func NewServer(
 
 func NewClient(
 	ipremotesocket string,
-	delim byte, readfunc func([]byte, net.Conn) error) *Client {
+	delim byte, readfunc ClientReadFunc) *Client {
 
 	c := &Client{
 		ipaddr:    ipremotesocket,
@@ -125,7 +139,6 @@ func NewClient(
 func (s *Server) SetDeadLine(rDDL time.Duration, wDDL time.Duration) {
 	s.readDDL, s.writeDDL = rDDL, wDDL
 }
-
 func (c *Client) SetDeadLine(dDDL time.Duration) {
 	c.dialDDL = dDDL
 }
@@ -133,9 +146,28 @@ func (c *Client) SetDeadLine(dDDL time.Duration) {
 func (s *Server) ErrChan() <-chan Errsocket {
 	return s.eU
 }
-
 func (c *Client) ErrChan() <-chan Errsocket {
 	return c.eU
+}
+
+func (s *Server) GetRemoteAddr() string {
+	if s.currentConn == nil {
+		return ""
+	}
+	return s.currentConn.RemoteAddr().String()
+}
+func (c *Client) GetRemoteAddr() string {
+	if c.c == nil {
+		return ""
+	}
+	return c.c.RemoteAddr().String()
+}
+
+func (s *Server) GetConn() net.Conn {
+	return s.currentConn
+}
+func (c *Client) GetConn() net.Conn {
+	return c.c
 }
 
 /*
@@ -167,8 +199,8 @@ func errDiversion(eD *eDer) func(eC chan Errsocket) {
 	//following data will be received but discarded
 	//when eC channel has closed, this goroutine will exit
 	return func(eC chan Errsocket) {
-		//fmt.Println("Start eD")
-		//defer fmt.Println("->eD quit")
+		fmt.Println("Start eD")
+		defer fmt.Println("->eD quit")
 		for {
 			err, ok := <-eC
 			if !ok {
@@ -216,19 +248,19 @@ func (c *Client) Dial() error {
 		return err
 	}
 	go c.eDerfunc(eC)
-	go handleConn(&handleConner{
+	go handleConnClient(&hConnerClient{
 		c:        c.c,
 		d:        c.delimiter,
 		readfunc: c.readfunc,
 		mu:       c.mu,
-	}, ctx, eC, &c.eDer)
+	}, ctx, eC, &c.eDer, c)
 
 	return nil
 }
 
 func handleListen(s *Server, eC chan Errsocket, ctx context.Context) {
-	//fmt.Println("Start hL")
-	//defer fmt.Println("->hL quit")
+	fmt.Println("Start hL")
+	defer fmt.Println("->hL quit")
 	defer close(eC)
 	for {
 		select {
@@ -253,23 +285,66 @@ func handleListen(s *Server, eC chan Errsocket, ctx context.Context) {
 
 			ceC := make(chan Errsocket)
 			go s.eDerfunc(ceC)
-			go handleConn(&handleConner{
+			go handleConnServer(&hConnerServer{
 				c:        conn,
 				d:        s.delimiter,
 				readfunc: s.readfunc,
 				mu:       s.mu,
-			}, cctx, ceC, nil)
+			}, cctx, ceC, s)
 		}
 	}
 }
 
 //what is eD: This is a patch for the Client's abnormal exit(without close()) that can turn off the error UpstreamChannel.
-func handleConn(h *handleConner, ctx context.Context, eC chan Errsocket, eD *eDer) {
-	//fmt.Println("Start hC:", h.c.LocalAddr(), "->", h.c.RemoteAddr())
-	//defer fmt.Println("->hC quit", h.c.LocalAddr(), "->", h.c.RemoteAddr())
+func handleConnServer(h *hConnerServer, ctx context.Context, eC chan Errsocket, s *Server) {
+	fmt.Println("Start hCS:", h.c.LocalAddr(), "->", h.c.RemoteAddr())
+	defer fmt.Println("->hCS quit", h.c.LocalAddr(), "->", h.c.RemoteAddr())
 	strReqChan := make(chan []byte)
 	defer func() {
-		if eD != nil && !eD.closed { //PATCH
+		err := h.c.Close()
+		<-strReqChan
+		if err != nil {
+			h.mu.Lock()
+			eC <- Errsocket{err, h.c.RemoteAddr().String()}
+		}
+		close(eC)
+	}()
+
+	go read(&reader{
+		c:          h.c,
+		d:          h.d,
+		mu:         h.mu,
+		strReqChan: strReqChan,
+	}, eC)
+
+	for {
+		select {
+		case <-ctx.Done(): //quit manually
+			return
+		case strReq, ok := <-strReqChan: //read a data slice successfully
+			if !ok {
+				return //EOF && d!=0
+			}
+			h.mu.Lock() //s.mu
+			s.currentConn = h.c
+			err := h.readfunc(strReq, s) //requires a lock from hL
+			s.currentConn = nil
+			h.mu.Unlock()
+			if err != nil {
+				h.mu.Lock()
+				eC <- Errsocket{err, h.c.RemoteAddr().String()}
+			}
+		}
+	}
+}
+
+//what is eD: This is a patch for the Client's abnormal exit(without close()) that can turn off the error UpstreamChannel.
+func handleConnClient(h *hConnerClient, ctx context.Context, eC chan Errsocket, eD *eDer, c *Client) {
+	fmt.Println("Start hCC:", h.c.LocalAddr(), "->", h.c.RemoteAddr())
+	defer fmt.Println("->hCC quit", h.c.LocalAddr(), "->", h.c.RemoteAddr())
+	strReqChan := make(chan []byte)
+	defer func() {
+		if !eD.closed { //PATCH
 			h.mu.Lock()
 			eD.closed = true
 			close(eD.eU)
@@ -300,8 +375,8 @@ func handleConn(h *handleConner, ctx context.Context, eC chan Errsocket, eD *eDe
 				return //EOF && d!=0
 			}
 			if h.readfunc != nil {
-				h.mu.Lock()                    //s.mu
-				err := h.readfunc(strReq, h.c) //requires a lock from hL
+				h.mu.Lock()                  //s.mu
+				err := h.readfunc(strReq, c) //requires a lock from hL
 				h.mu.Unlock()
 				if err != nil {
 					h.mu.Lock()
@@ -322,8 +397,8 @@ Server:
 6. Delimiter with local closed: 									DO NOTHING.
 */
 func read(r *reader, eC chan Errsocket) {
-	//fmt.Println("Start read", r.c.LocalAddr(), "->", r.c.RemoteAddr())
-	//defer fmt.Println("->read quit", r.c.LocalAddr(), "->", r.c.RemoteAddr())
+	fmt.Println("Start read", r.c.LocalAddr(), "->", r.c.RemoteAddr())
+	defer fmt.Println("->read quit", r.c.LocalAddr(), "->", r.c.RemoteAddr())
 	defer func() {
 		close(r.strReqChan)
 	}()
@@ -357,6 +432,10 @@ func read(r *reader, eC chan Errsocket) {
 
 func (t *Client) Write(i interface{}) error {
 	return Write(t.c, i, t.delimiter)
+}
+
+func (t *Server) Write(i interface{}) error {
+	return Write(t.currentConn, i, t.delimiter)
 }
 
 func Write(c net.Conn, i interface{}, d byte) error {

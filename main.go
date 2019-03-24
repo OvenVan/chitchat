@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"github.com/ovenvan/chitchat/common"
-	"net"
 	"time"
 	"unsafe"
 )
@@ -13,13 +12,27 @@ type Test struct {
 	Value int
 }
 
-func Creadfunc(s []byte, c net.Conn) error {
-	var t = *(**Test)(unsafe.Pointer(&s))
-	fmt.Println("from ", c.RemoteAddr(), ": data is : ", t)
+func Creadfunc(str []byte, c *common.Client) error {
+	var t = *(**Test)(unsafe.Pointer(&str))
+	fmt.Println("from ", c.GetRemoteAddr(), ": data is : ", t)
 	if t.Value < 100 {
-		return common.Write(c, Test{Id: t.Id + 1, Value: t.Value * 3}, '\n')
+		return c.Write(Test{Id: t.Id + 1, Value: t.Value * 3})
+		//return common.Write(, Test{Id: t.Id + 1, Value: t.Value * 3}, '\n')
 	} else {
-		fmt.Println(c.RemoteAddr(), "will close")
+		//fmt.Println(c.RemoteAddr(), "will close")
+
+	}
+	return nil
+}
+
+func Sreadfunc(str []byte, s *common.Server) error {
+	var t = *(**Test)(unsafe.Pointer(&str))
+	fmt.Println("from ", s.GetRemoteAddr(), ": data is : ", t)
+	if t.Value < 100 {
+		//return common.Write(c, Test{Id: t.Id + 1, Value: t.Value * 3}, '\n')
+		return s.Write(Test{Id: t.Id + 1, Value: t.Value * 3})
+	} else {
+		//fmt.Println(c.RemoteAddr(), "will close")
 
 	}
 	return nil
@@ -38,7 +51,7 @@ func DaemonListen(err <-chan common.Errsocket) {
 }
 
 func main() {
-	server := common.NewServer("127.0.0.1:8085", '\n', Creadfunc)
+	server := common.NewServer("127.0.0.1:8085", '\n', Sreadfunc)
 	fmt.Println(server.Listen())
 	go DaemonListen(server.ErrChan())
 
