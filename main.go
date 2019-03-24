@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"github.com/ovenvan/chitchat/common"
 	"time"
@@ -17,25 +18,22 @@ func Creadfunc(str []byte, c *common.Client) error {
 	fmt.Println("from ", c.GetRemoteAddr(), ": data is : ", t)
 	if t.Value < 100 {
 		return c.Write(Test{Id: t.Id + 1, Value: t.Value * 3})
-		//return common.Write(, Test{Id: t.Id + 1, Value: t.Value * 3}, '\n')
 	} else {
-		//fmt.Println(c.RemoteAddr(), "will close")
-
+		c.Close()
 	}
 	return nil
 }
 
 func Sreadfunc(str []byte, s *common.Server) error {
+	time.Sleep(time.Second)
 	var t = *(**Test)(unsafe.Pointer(&str))
 	fmt.Println("from ", s.GetRemoteAddr(), ": data is : ", t)
 	if t.Value < 100 {
-		//return common.Write(c, Test{Id: t.Id + 1, Value: t.Value * 3}, '\n')
 		return s.Write(Test{Id: t.Id + 1, Value: t.Value * 3})
 	} else {
-		//fmt.Println(c.RemoteAddr(), "will close")
-
+		s.Close(s.GetRemoteAddr())
+		return errors.New("Return From Server")
 	}
-	return nil
 }
 
 func DaemonListen(err <-chan common.Errsocket) {
@@ -51,6 +49,7 @@ func DaemonListen(err <-chan common.Errsocket) {
 }
 
 func main() {
+	var input byte
 	server := common.NewServer("127.0.0.1:8085", '\n', Sreadfunc)
 	fmt.Println(server.Listen())
 	go DaemonListen(server.ErrChan())
@@ -62,13 +61,9 @@ func main() {
 	client2 := common.NewClient("127.0.0.1:8085", '\n', Creadfunc)
 	_ = client2.Dial()
 	go DaemonListen(client2.ErrChan())
-
 	fmt.Println("write err:", client1.Write(Test{Id: 0, Value: 2}))
 	fmt.Println("write err:", client2.Write(Test{Id: 0, Value: 3}))
-	time.Sleep(time.Second)
-	client1.Close()
-	client2.Close()
-	time.Sleep(time.Second)
+	_, _ = fmt.Scan(&input)
 	server.Cut()
-	time.Sleep(time.Hour)
+	time.Sleep(time.Second)
 }
