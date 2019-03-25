@@ -197,10 +197,20 @@ func (t *Server) Cut() {
 }
 
 func (t *Server) Close(remoteAddr string) {
-	//t.remoteMap[remoteAddr]()
 	x, ok := t.remoteMap.Load(remoteAddr)
 	if !ok {
 		t.eU <- Errsocket{errors.New(remoteAddr + " does not connected to this server"), t.ipaddr}
+		return
+	}
+	x.(context.CancelFunc)()
+	t.remoteMap.Delete(remoteAddr)
+}
+
+func (t *Server) CloseCurr() {
+	remoteAddr := t.currentConn.RemoteAddr().String()
+	x, ok := t.remoteMap.Load(remoteAddr)
+	if !ok {
+		t.eU <- Errsocket{errors.New("internal error"), t.ipaddr}
 		return
 	}
 	x.(context.CancelFunc)()
@@ -213,6 +223,10 @@ func (t *Client) Close() {
 	close(t.eU)
 	t.mu.Unlock()
 	t.cancelfunc()
+}
+
+func (t *Server) RangeConn() {
+
 }
 
 func errDiversion(eD *eDer) func(eC chan Errsocket) {
@@ -355,8 +369,7 @@ func handleConnServer(h *hConnerServer, eC chan Errsocket, ctx context.Context, 
 			err := h.readfunc(strReq, &Server{
 				currentConn: h.conn,
 				delimiter:   h.d,
-				//remoteMap:   s.remoteMap,
-				remoteMap: s.remoteMap,
+				remoteMap:   s.remoteMap,
 			}) //requires a lock from hL
 			//h.mu.Unlock()
 			if err != nil {

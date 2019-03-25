@@ -30,7 +30,8 @@ func Sreadfunc(str []byte, s *common.Server) error {
 	if t.Value < 100 {
 		return s.Write(Test{Id: t.Id + 1, Value: t.Value * 3})
 	} else {
-		s.Close(s.GetRemoteAddr())
+		//s.Close(s.GetRemoteAddr())
+		s.CloseCurr()
 		return errors.New("Return From Server")
 	}
 }
@@ -53,6 +54,7 @@ func main() {
 	_, _ = fmt.Scan(&input)
 	failed := 0
 	server := common.NewServer("127.0.0.1:8085", '\n', Sreadfunc)
+	server.SetDeadLine(3*time.Second, 0)
 	fmt.Println(server.Listen())
 	go DaemonListen(server.ErrChan())
 
@@ -67,9 +69,10 @@ func main() {
 				//return
 			}
 			go DaemonListen(client.ErrChan())
-			fmt.Println("write err:", client.Write(Test{Id: 0, Value: 2}))
+			//fmt.Println("write err:", client.Write(Test{Id: 0, Value: 2}))
 		}()
 	}
+
 	_, _ = fmt.Scan(&exit)
 
 	server.Cut()
