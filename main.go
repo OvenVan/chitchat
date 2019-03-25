@@ -49,6 +49,7 @@ func DaemonListen(err <-chan common.Errsocket) {
 
 func main() {
 	var input, exit int
+	fmt.Println("Numbers for clients:")
 	_, _ = fmt.Scan(&input)
 	failed := 0
 	server := common.NewServer("127.0.0.1:8085", '\n', Sreadfunc)
@@ -59,10 +60,11 @@ func main() {
 		go func() {
 			client := common.NewClient("127.0.0.1:8085", '\n', Creadfunc)
 			err := client.Dial()
+			_ = err
 			if err != nil {
 				fmt.Println("Dail Failed!")
 				failed++
-				return
+				//return
 			}
 			go DaemonListen(client.ErrChan())
 			fmt.Println("write err:", client.Write(Test{Id: 0, Value: 2}))

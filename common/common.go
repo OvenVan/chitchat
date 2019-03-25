@@ -466,6 +466,9 @@ func (t *Server) Write(i interface{}) error {
 	return Write(t.currentConn, i, t.delimiter)
 }
 func Write(c net.Conn, i interface{}, d byte) error {
+	if c == nil {
+		return errors.New("connection not found")
+	}
 	data := struct2byte(i)
 	if d != 0 {
 		data = append(data, d)
