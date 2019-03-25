@@ -13,7 +13,7 @@ type Test struct {
 	Value int
 }
 
-func Creadfunc(str []byte, c *common.Client) error {
+func Creadfunc(str []byte, c common.ReadFuncer) error {
 	var t = *(**Test)(unsafe.Pointer(&str))
 	fmt.Println("from ", c.GetRemoteAddr(), ": data is : ", t)
 	if t.Value < 100 {
@@ -24,14 +24,14 @@ func Creadfunc(str []byte, c *common.Client) error {
 	return nil
 }
 
-func Sreadfunc(str []byte, s *common.Server) error {
+func Sreadfunc(str []byte, s common.ReadFuncer) error {
 	var t = *(**Test)(unsafe.Pointer(&str))
 	fmt.Println("from ", s.GetRemoteAddr(), ": data is : ", t)
 	if t.Value < 100 {
 		return s.Write(Test{Id: t.Id + 1, Value: t.Value * 3})
 	} else {
-		//s.Close(s.GetRemoteAddr())
-		s.CloseCurr()
+		//s.CloseRemote(s.GetRemoteAddr())
+		s.Close()
 		return errors.New("Return From Server")
 	}
 }
@@ -53,14 +53,14 @@ func main() {
 	fmt.Println("Numbers for clients:")
 	_, _ = fmt.Scan(&input)
 	failed := 0
-	server := common.NewServer("127.0.0.1:8085", '\n', Sreadfunc)
+	server := common.NewServer("127.0.0.1:8085", '\n', Sreadfunc, nil)
 	server.SetDeadLine(3*time.Second, 0)
 	fmt.Println(server.Listen())
 	go DaemonListen(server.ErrChan())
 
 	for i := 0; i < input; i++ {
 		go func() {
-			client := common.NewClient("127.0.0.1:8085", '\n', Creadfunc)
+			client := common.NewClient("127.0.0.1:8085", '\n', Creadfunc, nil)
 			err := client.Dial()
 			_ = err
 			if err != nil {
@@ -69,7 +69,7 @@ func main() {
 				//return
 			}
 			go DaemonListen(client.ErrChan())
-			//fmt.Println("write err:", client.Write(Test{Id: 0, Value: 2}))
+			fmt.Println("write err:", client.Write(Test{Id: 0, Value: 2}))
 		}()
 	}
 

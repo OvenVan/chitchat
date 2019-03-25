@@ -19,6 +19,7 @@ type ReadFuncer interface {
 	GetConn() net.Conn
 	Close()
 	Write(interface{}) error
+	Addon() interface{}
 }
 
 func init() {
@@ -46,9 +47,7 @@ type Server struct {
 	//if delimiter is 0, then read until it's EOF
 	delimiter byte
 	readfunc  ServerReadFunc
-	//readfunc  func([]byte, net.Conn) error
 
-	//remoteMap map[string]context.CancelFunc
 	remoteMap *sync.Map
 
 	//under protected data
@@ -56,9 +55,11 @@ type Server struct {
 	eDerfunc eDinitfunc
 
 	l          net.Listener
-	cancelfunc context.CancelFunc
+	cancelfunc context.CancelFunc //cancelfunc for cancel listener(CUT)
 
+	//tempory used for readfunc
 	currentConn net.Conn
+	additional  interface{}
 }
 
 type Client struct {
@@ -73,6 +74,9 @@ type Client struct {
 
 	conn       net.Conn
 	cancelfunc context.CancelFunc
+
+	//tempory used for readfunc
+	additional interface{}
 }
 
 type hConnerServer struct {
@@ -101,6 +105,7 @@ type eDer struct {
 	eU chan Errsocket
 	//why it's a value: this flag will only be modified by CUT, and only used by eD.
 	//*eDer.closed is a pointer. closed flag will not be copied.
+	//Warning: DONOT copy closed flag separately.
 	closed bool
 	//why it's a pointer: mutex will be copied separately. make sure the replicas are the same.
 	mu  *sync.Mutex
@@ -115,7 +120,7 @@ type sliceMock struct {
 
 func NewServer(
 	ipaddrsocket string,
-	delim byte, readfunc ServerReadFunc) *Server {
+	delim byte, readfunc ServerReadFunc, additional interface{}) *Server {
 
 	s := &Server{
 		ipaddr:    ipaddrsocket,
@@ -128,9 +133,9 @@ func NewServer(
 			mu:     new(sync.Mutex),
 			pmu:    nil,
 		},
-		//remoteMap: make(map[string]context.CancelFunc),
-		remoteMap: new(sync.Map),
-		readfunc:  readfunc,
+		remoteMap:  new(sync.Map),
+		readfunc:   readfunc,
+		additional: additional,
 	}
 	s.eDerfunc = errDiversion(&s.eDer)
 	return s
@@ -138,7 +143,7 @@ func NewServer(
 
 func NewClient(
 	ipremotesocket string,
-	delim byte, readfunc ClientReadFunc) *Client {
+	delim byte, readfunc ClientReadFunc, additional interface{}) *Client {
 
 	c := &Client{
 		ipaddr:    ipremotesocket,
@@ -151,6 +156,7 @@ func NewClient(
 			mu:     new(sync.Mutex),
 			pmu:    nil,
 		},
+		additional: additional,
 	}
 	c.eDerfunc = errDiversion(&c.eDer)
 	return c
@@ -188,6 +194,13 @@ func (t *Server) GetConn() net.Conn {
 }
 func (t *Client) GetConn() net.Conn {
 	return t.conn
+}
+
+func (t *Server) Addon() interface{} {
+	return t.additional
+}
+func (t *Client) Addon() interface{} {
+	return t.additional
 }
 
 /*
@@ -235,8 +248,14 @@ func (t *Client) Close() {
 	t.cancelfunc()
 }
 
-func (t *Server) RangeConn() {
-	//TODO: RangeConn
+func (t *Server) RangeConn() []string {
+	rtnstring := make([]string, 0)
+	t.remoteMap.Range(
+		func(key, value interface{}) bool {
+			rtnstring = append(rtnstring, key.(string))
+			return true
+		})
+	return rtnstring
 }
 
 func errDiversion(eD *eDer) func(eC chan Errsocket) {
