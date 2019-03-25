@@ -38,7 +38,8 @@ type Server struct {
 	readfunc  ServerReadFunc
 	//readfunc  func([]byte, net.Conn) error
 
-	remoteMap map[string]context.CancelFunc
+	//remoteMap map[string]context.CancelFunc
+	remoteMap *sync.Map
 
 	//under protected data
 	eDer
@@ -117,7 +118,8 @@ func NewServer(
 			mu:     new(sync.Mutex),
 			pmu:    nil,
 		},
-		remoteMap: make(map[string]context.CancelFunc),
+		//remoteMap: make(map[string]context.CancelFunc),
+		remoteMap: new(sync.Map),
 		readfunc:  readfunc,
 	}
 	s.eDerfunc = errDiversion(&s.eDer)
@@ -144,66 +146,73 @@ func NewClient(
 	return c
 }
 
-func (s *Server) SetDeadLine(rDDL time.Duration, wDDL time.Duration) {
-	s.readDDL, s.writeDDL = rDDL, wDDL
+func (t *Server) SetDeadLine(rDDL time.Duration, wDDL time.Duration) {
+	t.readDDL, t.writeDDL = rDDL, wDDL
 }
-func (c *Client) SetDeadLine(dDDL time.Duration) {
-	c.dialDDL = dDDL
-}
-
-func (s *Server) ErrChan() <-chan Errsocket {
-	return s.eU
-}
-func (c *Client) ErrChan() <-chan Errsocket {
-	return c.eU
+func (t *Client) SetDeadLine(dDDL time.Duration) {
+	t.dialDDL = dDDL
 }
 
-func (s *Server) GetRemoteAddr() string {
-	if s.currentConn == nil {
+func (t *Server) ErrChan() <-chan Errsocket {
+	return t.eU
+}
+func (t *Client) ErrChan() <-chan Errsocket {
+	return t.eU
+}
+
+func (t *Server) GetRemoteAddr() string {
+	if t.currentConn == nil {
 		return ""
 	}
-	return s.currentConn.RemoteAddr().String()
+	return t.currentConn.RemoteAddr().String()
 }
-func (c *Client) GetRemoteAddr() string {
-	if c.conn == nil {
+func (t *Client) GetRemoteAddr() string {
+	if t.conn == nil {
 		return ""
 	}
-	return c.conn.RemoteAddr().String()
+	return t.conn.RemoteAddr().String()
 }
 
-func (s *Server) GetConn() net.Conn {
-	return s.currentConn
+func (t *Server) GetConn() net.Conn {
+	return t.currentConn
 }
-func (c *Client) GetConn() net.Conn {
-	return c.conn
+func (t *Client) GetConn() net.Conn {
+	return t.conn
 }
 
 /*
 will not wait for the rest of goroutines' error message.
 make sure all connections has exited successfully before doing this
 */
-func (s *Server) Cut() {
-	s.mu.Lock()
-	err := s.l.Close()
+func (t *Server) Cut() {
+	t.mu.Lock()
+	err := t.l.Close()
 	if err != nil {
-		s.eU <- Errsocket{err, s.ipaddr}
+		t.eU <- Errsocket{err, t.ipaddr}
 	}
-	s.closed = true
-	close(s.eU)
-	s.mu.Unlock()
-	s.cancelfunc()
+	t.closed = true
+	close(t.eU)
+	t.mu.Unlock()
+	t.cancelfunc()
 }
 
-func (s *Server) Close(remoteAddr string) {
-	s.remoteMap[remoteAddr]()
+func (t *Server) Close(remoteAddr string) {
+	//t.remoteMap[remoteAddr]()
+	x, ok := t.remoteMap.Load(remoteAddr)
+	if !ok {
+		t.eU <- Errsocket{errors.New(remoteAddr + " does not connected to this server"), t.ipaddr}
+		return
+	}
+	x.(context.CancelFunc)()
+	t.remoteMap.Delete(remoteAddr)
 }
 
-func (c *Client) Close() {
-	c.mu.Lock()
-	c.closed = true
-	close(c.eU)
-	c.mu.Unlock()
-	c.cancelfunc()
+func (t *Client) Close() {
+	t.mu.Lock()
+	t.closed = true
+	close(t.eU)
+	t.mu.Unlock()
+	t.cancelfunc()
 }
 
 func errDiversion(eD *eDer) func(eC chan Errsocket) {
@@ -229,47 +238,48 @@ func errDiversion(eD *eDer) func(eC chan Errsocket) {
 	}
 }
 
-func (s *Server) Listen() error { //Notifies the consumer when an error occurs ASYNCHRONOUSLY
-	if s.readfunc == nil {
-		return errors.New("Read function is nil")
+func (t *Server) Listen() error { //Notifies the consumer when an error occurs ASYNCHRONOUSLY
+	if t.readfunc == nil {
+		return errors.New("read function is nil")
 	}
-	listener, err := net.Listen("tcp", s.ipaddr)
+	listener, err := net.Listen("tcp", t.ipaddr)
 	if err != nil {
 		return err
 	}
+
 	var ctx, cfunc = context.WithCancel(context.Background())
-	s.cancelfunc = cfunc
-	s.l = listener
+	t.cancelfunc = cfunc
+	t.l = listener
 	eC := make(chan Errsocket)
-	go s.eDerfunc(eC)
-	go handleListen(s, eC, ctx)
+	go t.eDerfunc(eC)
+	go handleListen(t, eC, ctx)
 	return nil
 }
 
-func (c *Client) Dial() error {
+func (t *Client) Dial() error {
 	var (
 		err        error
 		ctx, cfunc = context.WithCancel(context.Background())
 		eC         = make(chan Errsocket)
 	)
-	c.cancelfunc = cfunc
+	t.cancelfunc = cfunc
 
-	if c.dialDDL == 0 {
-		c.conn, err = net.Dial("tcp", c.ipaddr)
+	if t.dialDDL == 0 {
+		t.conn, err = net.Dial("tcp", t.ipaddr)
 	} else {
-		c.conn, err = net.DialTimeout("tcp", c.ipaddr, c.dialDDL)
+		t.conn, err = net.DialTimeout("tcp", t.ipaddr, t.dialDDL)
 	}
 	if err != nil {
 		return err
 	}
-	go c.eDerfunc(eC)
+	go t.eDerfunc(eC)
 	go handleConnClient(&hConnerClient{
-		conn:     c.conn,
-		d:        c.delimiter,
-		readfunc: c.readfunc,
-		mu:       c.mu,
-		eD:       &c.eDer,
-	}, eC, ctx, c)
+		conn:     t.conn,
+		d:        t.delimiter,
+		readfunc: t.readfunc,
+		mu:       t.mu,
+		eD:       &t.eDer,
+	}, eC, ctx, t)
 
 	return nil
 }
@@ -296,8 +306,9 @@ func handleListen(s *Server, eC chan Errsocket, ctx context.Context) {
 				_ = conn.SetWriteDeadline(time.Now().Add(s.writeDDL))
 			}
 
-			cctx, childfunc := context.WithCancel(ctx)          //TODO: if MAXLIVETIME is needed.
-			s.remoteMap[conn.RemoteAddr().String()] = childfunc //TODO: childfunc are the same???
+			cctx, childfunc := context.WithCancel(ctx) //TODO: if MAXLIVETIME is needed.
+			//s.remoteMap[conn.RemoteAddr().String()] = childfunc
+			s.remoteMap.Store(conn.RemoteAddr().String(), childfunc)
 
 			ceC := make(chan Errsocket)
 			go s.eDerfunc(ceC)
@@ -344,7 +355,8 @@ func handleConnServer(h *hConnerServer, eC chan Errsocket, ctx context.Context, 
 			err := h.readfunc(strReq, &Server{
 				currentConn: h.conn,
 				delimiter:   h.d,
-				remoteMap:   s.remoteMap,
+				//remoteMap:   s.remoteMap,
+				remoteMap: s.remoteMap,
 			}) //requires a lock from hL
 			//h.mu.Unlock()
 			if err != nil {
@@ -468,9 +480,8 @@ func struct2byte(t interface{}) []byte {
 
 	p := reflect.New(reflect.TypeOf(t))
 	p.Elem().Set(reflect.ValueOf(t))
-	addr := p.Elem().UnsafeAddr()
 	testBytes := &sliceMock{
-		addr: addr,
+		addr: p.Elem().UnsafeAddr(),
 		cap:  int(Len),
 		len:  int(Len),
 	}
