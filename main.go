@@ -25,7 +25,6 @@ func Creadfunc(str []byte, c *common.Client) error {
 }
 
 func Sreadfunc(str []byte, s *common.Server) error {
-	time.Sleep(time.Second)
 	var t = *(**Test)(unsafe.Pointer(&str))
 	fmt.Println("from ", s.GetRemoteAddr(), ": data is : ", t)
 	if t.Value < 100 {
@@ -49,21 +48,29 @@ func DaemonListen(err <-chan common.Errsocket) {
 }
 
 func main() {
-	var input byte
+	var input, exit int
+	_, _ = fmt.Scan(&input)
+	failed := 0
 	server := common.NewServer("127.0.0.1:8085", '\n', Sreadfunc)
 	fmt.Println(server.Listen())
 	go DaemonListen(server.ErrChan())
 
-	client1 := common.NewClient("127.0.0.1:8085", '\n', Creadfunc)
-	_ = client1.Dial()
-	go DaemonListen(client1.ErrChan())
+	for i := 0; i < input; i++ {
+		go func() {
+			client := common.NewClient("127.0.0.1:8085", '\n', Creadfunc)
+			err := client.Dial()
+			if err != nil {
+				fmt.Println("Dail Failed!")
+				failed++
+				return
+			}
+			go DaemonListen(client.ErrChan())
+			fmt.Println("write err:", client.Write(Test{Id: 0, Value: 2}))
+		}()
+	}
+	_, _ = fmt.Scan(&exit)
 
-	client2 := common.NewClient("127.0.0.1:8085", '\n', Creadfunc)
-	_ = client2.Dial()
-	go DaemonListen(client2.ErrChan())
-	fmt.Println("write err:", client1.Write(Test{Id: 0, Value: 2}))
-	fmt.Println("write err:", client2.Write(Test{Id: 0, Value: 3}))
-	_, _ = fmt.Scan(&input)
 	server.Cut()
+	fmt.Println("failed times: ", failed, "/", input, ",", failed*100.0/input, "%")
 	time.Sleep(time.Second)
 }
