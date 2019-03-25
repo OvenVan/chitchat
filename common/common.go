@@ -14,6 +14,13 @@ import (
 
 var closedchan = make(chan struct{})
 
+type ReadFuncer interface {
+	GetRemoteAddr() string
+	GetConn() net.Conn
+	Close()
+	Write(interface{}) error
+}
+
 func init() {
 	close(closedchan)
 }
@@ -25,8 +32,11 @@ type Errsocket struct {
 	Addr string
 }
 
-type ServerReadFunc func([]byte, *Server) error
-type ClientReadFunc func([]byte, *Client) error
+type ServerReadFunc func([]byte, ReadFuncer) error
+
+//type ServerReadFunc func([]byte, *Server) error
+//type ClientReadFunc func([]byte, *Client) error
+type ClientReadFunc func([]byte, ReadFuncer) error
 
 type Server struct {
 	//unchangable data
@@ -196,7 +206,7 @@ func (t *Server) Cut() {
 	t.cancelfunc()
 }
 
-func (t *Server) Close(remoteAddr string) {
+func (t *Server) CloseRemote(remoteAddr string) {
 	x, ok := t.remoteMap.Load(remoteAddr)
 	if !ok {
 		t.eU <- Errsocket{errors.New(remoteAddr + " does not connected to this server"), t.ipaddr}
@@ -206,7 +216,7 @@ func (t *Server) Close(remoteAddr string) {
 	t.remoteMap.Delete(remoteAddr)
 }
 
-func (t *Server) CloseCurr() {
+func (t *Server) Close() {
 	remoteAddr := t.currentConn.RemoteAddr().String()
 	x, ok := t.remoteMap.Load(remoteAddr)
 	if !ok {
@@ -226,7 +236,7 @@ func (t *Client) Close() {
 }
 
 func (t *Server) RangeConn() {
-
+	//TODO: RangeConn
 }
 
 func errDiversion(eD *eDer) func(eC chan Errsocket) {
