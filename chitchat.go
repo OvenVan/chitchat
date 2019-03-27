@@ -36,7 +36,7 @@ func registerNode(str []byte, s common.ReadFuncer) error {
 	if sx := string(str); sx != "" {
 		x := s.Addon().(*Node)
 		x.registeredIP = append(x.registeredIP, x.remote.ipaddr)
-		go daemonHBChecker(x.remote.ipaddr)
+		go daemonHBChecker(x.remote)
 		fmt.Println(x.registeredIP)
 	}
 	return nil
@@ -51,6 +51,8 @@ func hb4node(str []byte, s common.ReadFuncer) error {
 func hb4master(str []byte, s common.ReadFuncer) error {
 	if sx := string(str); sx == "heartbeat pong" {
 		fmt.Println("heartbeat check succeed.")
+		x := s.Addon().(*int)
+		*x = 0
 		s.Close()
 		return nil
 	}
@@ -58,6 +60,7 @@ func hb4master(str []byte, s common.ReadFuncer) error {
 }
 
 func (t *Node) daemonHBListener() error { //for Nodes listen Master's heartbeat check
+	defer fmt.Println("HBListen quit.") //when to close: Cut.
 	s := common.NewServer(t.local.ipaddr+":"+"7939", '\n', hb4node, nil)
 	t.leave = s.Cut
 	if err := s.Listen(); err != nil {
@@ -71,22 +74,22 @@ func (t *Node) daemonHBListener() error { //for Nodes listen Master's heartbeat 
 					//failedTimes++
 				}
 			} else {
-				fmt.Println("HBL Listen closed.") //when to close: Cut.
 				return
 			}
 		}
 	}()
 	return nil
 }
-func daemonHBChecker(ipAddr string) {
-	i := time.NewTicker(5 * time.Second)
+func daemonHBChecker(ip ipx) {
+	defer fmt.Println("HBChecker quit")
+	i := time.NewTicker(3 * time.Second)
 	failedTimes := 0
 	var c *common.Client
 	for {
 		select {
 		case <-i.C:
 			fmt.Println("-----------------------------------")
-			c = common.NewClient(ipAddr+":"+"7939", '\n', hb4master, nil)
+			c = common.NewClient(ip.ipaddr+":"+"7939", '\n', hb4master, &failedTimes)
 			c.SetDeadLine(2 * time.Second)
 			if err := c.Dial(); err != nil {
 				//TODO: Failed once.
@@ -111,9 +114,10 @@ func daemonHBChecker(ipAddr string) {
 				break
 			}
 		}
-		if failedTimes > 0 {
+		fmt.Println(ip.ipaddr+":"+ip.ipport+" failed time: ", failedTimes)
+		if failedTimes > 3 {
 			//TODO: this connection is failed.
-			fmt.Println(ipAddr+"failed time: ", failedTimes)
+			return
 		}
 	}
 }
