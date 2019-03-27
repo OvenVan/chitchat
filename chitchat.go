@@ -12,12 +12,16 @@ type MasterRoler interface {
 }
 type NodeRoler interface {
 	Register() error
+	Leave()
 }
 
 type Node struct {
 	roleMaster bool
 	local      ipx
 	remote     ipx
+
+	//For Nodes
+	leave func()
 
 	//For MasterNode
 	registeredIP []string
@@ -55,6 +59,7 @@ func hb4master(str []byte, s common.ReadFuncer) error {
 
 func (t *Node) daemonHBListener() error { //for Nodes listen Master's heartbeat check
 	s := common.NewServer(t.local.ipaddr+":"+"7939", '\n', hb4node, nil)
+	t.leave = s.Cut
 	if err := s.Listen(); err != nil {
 		return err
 	}
@@ -75,9 +80,9 @@ func (t *Node) daemonHBListener() error { //for Nodes listen Master's heartbeat 
 }
 func daemonHBChecker(ipAddr string) {
 	i := time.NewTicker(5 * time.Second)
+	failedTimes := 0
 	var c *common.Client
 	for {
-		failedTimes := 0
 		select {
 		case <-i.C:
 			fmt.Println("-----------------------------------")
@@ -86,7 +91,7 @@ func daemonHBChecker(ipAddr string) {
 			if err := c.Dial(); err != nil {
 				//TODO: Failed once.
 				failedTimes++
-				continue
+				break
 			}
 			go func() {
 				for {
@@ -103,8 +108,12 @@ func daemonHBChecker(ipAddr string) {
 			}()
 			if err := c.Write("heartbeat ping"); err != nil {
 				failedTimes++
-				continue
+				break
 			}
+		}
+		if failedTimes > 0 {
+			//TODO: this connection is failed.
+			fmt.Println(ipAddr+"failed time: ", failedTimes)
 		}
 	}
 }
@@ -163,4 +172,8 @@ func (t *Node) Register() error {
 	}
 	slave.Close()
 	return t.daemonHBListener()
+}
+
+func (t *Node) Leave() {
+	t.leave()
 }
