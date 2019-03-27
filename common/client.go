@@ -84,7 +84,7 @@ func (t *Client) Dial() error {
 	return nil
 }
 
-func handleConnClient(h *hConnerClient, eC chan Errsocket, ctx context.Context, c *Client) {
+func handleConnClient(h *hConnerClient, eC chan Errsocket, ctx context.Context, client *Client) {
 	fmt.Println("Start hCC:", h.conn.LocalAddr(), "->", h.conn.RemoteAddr())
 	defer fmt.Println("->hCC quit", h.conn.LocalAddr(), "->", h.conn.RemoteAddr())
 	strReqChan := make(chan []byte)
@@ -121,7 +121,7 @@ func handleConnClient(h *hConnerClient, eC chan Errsocket, ctx context.Context, 
 			}
 			if h.readfunc != nil {
 				//h.mu.Lock()                  //s.mu
-				err := h.readfunc(strReq, c) //requires a lock from hL
+				err := h.readfunc(strReq, client)
 				//h.mu.Unlock()
 				if err != nil {
 					h.mu.Lock()
@@ -153,6 +153,12 @@ func (t *Client) GetRemoteAddr() string {
 		return ""
 	}
 	return t.conn.RemoteAddr().String()
+}
+func (t *Client) GetLocalAddr() string {
+	if t.conn == nil {
+		return ""
+	}
+	return t.conn.LocalAddr().String()
 }
 
 func (t *Client) GetConn() net.Conn {

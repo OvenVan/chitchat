@@ -14,6 +14,7 @@ var closedchan = make(chan struct{})
 
 type ReadFuncer interface {
 	GetRemoteAddr() string
+	GetLocalAddr() string
 	GetConn() net.Conn
 	Close()
 	Write(interface{}) error
@@ -99,7 +100,7 @@ func read(r *reader, eC chan Errsocket) {
 		for {
 			_, err := r.conn.Read(readBytes)
 			if err != nil {
-				fmt.Println(err.Error())
+				//fmt.Println(err.Error())
 				if r.d == 0 {
 					r.strReqChan <- buffer.Bytes()
 				} else {
@@ -122,14 +123,26 @@ func read(r *reader, eC chan Errsocket) {
 	}
 }
 
+//it doesn't seem good
 func Write(c net.Conn, i interface{}, d byte) error {
 	if c == nil {
 		return errors.New("connection not found")
 	}
-	data := struct2byte(i)
+	var data []byte
+
+	switch reflect.TypeOf(i).Kind() {
+	case reflect.String:
+		data = []byte(i.(string))
+	case reflect.Struct:
+		data = struct2byte(i)
+	default:
+		data = i.([]byte)
+	}
+
 	if d != 0 {
 		data = append(data, d)
 	}
+	//fmt.Println(data)
 	_, err := c.Write(data)
 	return err
 }

@@ -154,6 +154,7 @@ func handleConnServer(h *hConnerServer, eC chan Errsocket, ctx context.Context, 
 				currentConn: h.conn,
 				delimiter:   h.d,
 				remoteMap:   s.remoteMap,
+				additional:  s.additional,
 			}) //requires a lock from hL
 			//h.mu.Unlock()
 			if err != nil {
@@ -224,6 +225,13 @@ func (t *Server) GetRemoteAddr() string {
 		return ""
 	}
 	return t.currentConn.RemoteAddr().String()
+}
+
+func (t *Server) GetLocalAddr() string {
+	if t.currentConn == nil {
+		return ""
+	}
+	return t.currentConn.LocalAddr().String()
 }
 
 func (t *Server) GetConn() net.Conn {
