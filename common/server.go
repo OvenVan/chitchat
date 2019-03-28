@@ -37,7 +37,7 @@ type Server struct {
 type hConnerServer struct {
 	conn     net.Conn
 	d        byte
-	mu       *sync.Mutex //lock readfunc
+	mu       *sync.Mutex
 	readfunc ServerReadFunc
 }
 
@@ -149,14 +149,12 @@ func handleConnServer(h *hConnerServer, eC chan Errsocket, ctx context.Context, 
 			if !ok {
 				return //EOF && d!=0
 			}
-			//h.mu.Lock() //s.mu		why does it need a lock?? Temporary removed it.
 			err := h.readfunc(strReq, &Server{
 				currentConn: h.conn,
 				delimiter:   h.d,
 				remoteMap:   s.remoteMap,
 				additional:  s.additional,
-			}) //requires a lock from hL
-			//h.mu.Unlock()
+			})
 			if err != nil {
 				h.mu.Lock()
 				eC <- Errsocket{err, h.conn.RemoteAddr().String()}

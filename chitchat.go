@@ -46,17 +46,17 @@ func hb4node(str []byte, s common.ReadFuncer) error {
 	if sx := string(str); sx == "heartbeat ping" {
 		return s.Write("heartbeat pong")
 	}
-	return errors.New("err message received.")
+	return errors.New("err message received")
 }
+
 func hb4master(str []byte, s common.ReadFuncer) error {
 	if sx := string(str); sx == "heartbeat pong" {
 		fmt.Println("heartbeat check succeed.")
-		x := s.Addon().(*int)
-		*x = 0
 		s.Close()
-		return nil
+		return errors.New("succeed")
 	}
-	return errors.New("err message received.")
+	s.Close()
+	return errors.New("err message received")
 }
 
 func (t *Node) daemonHBListener() error { //for Nodes listen Master's heartbeat check
@@ -80,16 +80,16 @@ func (t *Node) daemonHBListener() error { //for Nodes listen Master's heartbeat 
 	}()
 	return nil
 }
+
 func daemonHBChecker(ip ipx) {
 	defer fmt.Println("HBChecker quit")
 	i := time.NewTicker(3 * time.Second)
 	failedTimes := 0
-	var c *common.Client
 	for {
 		select {
 		case <-i.C:
 			fmt.Println("-----------------------------------")
-			c = common.NewClient(ip.ipaddr+":"+"7939", '\n', hb4master, &failedTimes)
+			c := common.NewClient(ip.ipaddr+":"+"7939", '\n', hb4master, &failedTimes)
 			c.SetDeadLine(2 * time.Second)
 			if err := c.Dial(); err != nil {
 				//TODO: Failed once.
@@ -102,9 +102,11 @@ func daemonHBChecker(ip ipx) {
 					if ok {
 						if v.Err.Error() == "err message received" {
 							failedTimes++
+						} else if v.Err.Error() == "hbc succeed" {
+							failedTimes = 0
 						}
 					} else {
-						fmt.Println("HBC Listen closed.")
+						fmt.Println("HBC closed.")
 						return
 					}
 				}
@@ -113,7 +115,8 @@ func daemonHBChecker(ip ipx) {
 				failedTimes++
 				break
 			}
-		}
+		} //break to here
+
 		fmt.Println(ip.ipaddr+":"+ip.ipport+" failed time: ", failedTimes)
 		if failedTimes > 3 {
 			//TODO: this connection is failed.

@@ -16,6 +16,9 @@ type Client struct {
 	delimiter byte
 
 	readfunc ClientReadFunc
+	//What's rcmu: func CLOSE can be used inside readfunc, in such case, return err cannot be sent to user without rcmu.
+	//Why not server: func CUT cannot be used inside readfunc.
+	rcmu *sync.Mutex
 
 	eDer
 	eDerfunc eDinitfunc
@@ -28,9 +31,10 @@ type Client struct {
 }
 
 type hConnerClient struct {
-	conn     net.Conn
-	d        byte
-	mu       *sync.Mutex //lock readfunc
+	conn net.Conn
+	d    byte
+	rcmu *sync.Mutex //lock for readfunc and close
+	//mu       *sync.Mutex
 	readfunc ClientReadFunc
 	eD       *eDer
 }
@@ -50,6 +54,7 @@ func NewClient(
 			mu:     new(sync.Mutex),
 			pmu:    nil,
 		},
+		rcmu:       new(sync.Mutex),
 		additional: additional,
 	}
 	c.eDerfunc = errDiversion(&c.eDer)
@@ -77,8 +82,9 @@ func (t *Client) Dial() error {
 		conn:     t.conn,
 		d:        t.delimiter,
 		readfunc: t.readfunc,
-		mu:       t.mu,
-		eD:       &t.eDer,
+		rcmu:     t.rcmu,
+		//mu:       t.mu,
+		eD: &t.eDer,
 	}, eC, ctx, t)
 
 	return nil
@@ -90,15 +96,15 @@ func handleConnClient(h *hConnerClient, eC chan Errsocket, ctx context.Context, 
 	strReqChan := make(chan []byte)
 	defer func() {
 		if !h.eD.closed {
-			h.mu.Lock()
+			h.eD.mu.Lock()
 			h.eD.closed = true
 			close(h.eD.eU)
-			h.mu.Unlock()
+			h.eD.mu.Lock()
 		}
 		err := h.conn.Close()
 		<-strReqChan
 		if err != nil {
-			h.mu.Lock()
+			h.eD.mu.Lock()
 			eC <- Errsocket{err, h.conn.RemoteAddr().String()}
 		}
 		close(eC)
@@ -107,7 +113,7 @@ func handleConnClient(h *hConnerClient, eC chan Errsocket, ctx context.Context, 
 	go read(&reader{
 		conn:       h.conn,
 		d:          h.d,
-		mu:         h.mu,
+		mu:         h.eD.mu,
 		strReqChan: strReqChan,
 	}, eC)
 
@@ -120,24 +126,28 @@ func handleConnClient(h *hConnerClient, eC chan Errsocket, ctx context.Context, 
 				return //EOF && d!=0
 			}
 			if h.readfunc != nil {
-				//h.mu.Lock()                  //s.mu
+				h.rcmu.Lock()
 				err := h.readfunc(strReq, client)
-				//h.mu.Unlock()
 				if err != nil {
-					h.mu.Lock()
+					h.eD.mu.Lock()
 					eC <- Errsocket{err, h.conn.RemoteAddr().String()}
 				}
+				h.rcmu.Unlock()
 			}
 		}
 	}
 }
 
 func (t *Client) Close() {
-	t.mu.Lock()
-	t.closed = true
-	close(t.eU)
-	t.mu.Unlock()
-	t.cancelfunc()
+	go func() {
+		t.rcmu.Lock()
+		t.mu.Lock()
+		t.closed = true
+		close(t.eU)
+		t.mu.Unlock()
+		t.rcmu.Unlock()
+		t.cancelfunc()
+	}()
 }
 
 func (t *Client) SetDeadLine(dDDL time.Duration) {
