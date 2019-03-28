@@ -3,7 +3,6 @@ package common
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -83,8 +82,8 @@ func (t *Server) Listen() error { //Notifies the consumer when an error occurs A
 }
 
 func handleListen(s *Server, eC chan Errsocket, ctx context.Context) {
-	fmt.Println("Start hL")
-	defer fmt.Println("->hL quit")
+	//fmt.Println("Start hL")
+	//defer fmt.Println("->hL quit")
 	defer close(eC)
 	for {
 		select {
@@ -121,8 +120,8 @@ func handleListen(s *Server, eC chan Errsocket, ctx context.Context) {
 }
 
 func handleConnServer(h *hConnerServer, eC chan Errsocket, ctx context.Context, s *Server) {
-	fmt.Println("Start hCS:", h.conn.LocalAddr(), "->", h.conn.RemoteAddr())
-	defer fmt.Println("->hCS quit", h.conn.LocalAddr(), "->", h.conn.RemoteAddr())
+	//fmt.Println("Start hCS:", h.conn.LocalAddr(), "->", h.conn.RemoteAddr())
+	//defer fmt.Println("->hCS quit", h.conn.LocalAddr(), "->", h.conn.RemoteAddr())
 	strReqChan := make(chan []byte)
 	defer func() {
 		err := h.conn.Close()

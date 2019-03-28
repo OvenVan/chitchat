@@ -2,7 +2,6 @@ package common
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -91,8 +90,8 @@ func (t *Client) Dial() error {
 }
 
 func handleConnClient(h *hConnerClient, eC chan Errsocket, ctx context.Context, client *Client) {
-	fmt.Println("Start hCC:", h.conn.LocalAddr(), "->", h.conn.RemoteAddr())
-	defer fmt.Println("->hCC quit", h.conn.LocalAddr(), "->", h.conn.RemoteAddr())
+	//fmt.Println("Start hCC:", h.conn.LocalAddr(), "->", h.conn.RemoteAddr())
+	//defer fmt.Println("->hCC quit", h.conn.LocalAddr(), "->", h.conn.RemoteAddr())
 	strReqChan := make(chan []byte)
 	defer func() {
 		if !h.eD.closed {

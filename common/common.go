@@ -3,7 +3,6 @@ package common
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"net"
 	"reflect"
 	"sync"
@@ -61,8 +60,8 @@ func errDiversion(eD *eDer) func(eC chan Errsocket) {
 	//following data will be received but discarded
 	//when eC channel has closed, this goroutine will exit
 	return func(eC chan Errsocket) {
-		fmt.Println("Start eD")
-		defer fmt.Println("->eD quit")
+		//fmt.Println("Start eD")
+		//defer fmt.Println("->eD quit")
 		for {
 			err, ok := <-eC
 			if !ok {
@@ -89,8 +88,8 @@ No delimiter with local closed:                   DO NOTHING.(Strange)
 No delimiter with healthy connection:             waiting for closed.
 */
 func read(r *reader, eC chan Errsocket) {
-	fmt.Println("Start read", r.conn.LocalAddr(), "->", r.conn.RemoteAddr())
-	defer fmt.Println("->read quit", r.conn.LocalAddr(), "->", r.conn.RemoteAddr())
+	//fmt.Println("Start read", r.conn.LocalAddr(), "->", r.conn.RemoteAddr())
+	//defer fmt.Println("->read quit", r.conn.LocalAddr(), "->", r.conn.RemoteAddr())
 	defer func() {
 		close(r.strReqChan)
 	}()

@@ -9,6 +9,7 @@ import (
 
 type MasterRoler interface {
 	Listen() error
+	Close()
 }
 type NodeRoler interface {
 	Register() error
@@ -20,11 +21,12 @@ type Node struct {
 	local      ipx
 	remote     ipx
 
-	//For Nodes
+	//For Nodes/master
 	leave func()
 
 	//For MasterNode
 	registeredIP []string
+	closesignal  chan struct{}
 }
 
 type ipx struct {
@@ -36,7 +38,7 @@ func registerNode(str []byte, s common.ReadFuncer) error {
 	if sx := string(str); sx != "" {
 		x := s.Addon().(*Node)
 		x.registeredIP = append(x.registeredIP, x.remote.ipaddr)
-		go daemonHBChecker(x.remote)
+		go daemonHBChecker(x.remote, x.closesignal)
 		fmt.Println(x.registeredIP)
 	}
 	return nil
@@ -44,52 +46,69 @@ func registerNode(str []byte, s common.ReadFuncer) error {
 
 func hb4node(str []byte, s common.ReadFuncer) error {
 	if sx := string(str); sx == "heartbeat ping" {
-		return s.Write("heartbeat pong")
+		if err := s.Write("heartbeat pong"); err == nil {
+			return errors.New("succeed")
+		}
+		return errors.New("writing data error")
 	}
 	return errors.New("err message received")
 }
 
 func hb4master(str []byte, s common.ReadFuncer) error {
+	defer s.Close()
 	if sx := string(str); sx == "heartbeat pong" {
-		fmt.Println("heartbeat check succeed.")
-		s.Close()
 		return errors.New("succeed")
 	}
-	s.Close()
 	return errors.New("err message received")
 }
 
-func (t *Node) daemonHBListener() error { //for Nodes listen Master's heartbeat check
-	defer fmt.Println("HBListen quit.") //when to close: Cut.
+func (t *Node) daemonHBListener() error { //for Nodes listen Master's hbc
+	fmt.Println("HBListen start.")
+	defer fmt.Println("->HBListen quit.")
 	s := common.NewServer(t.local.ipaddr+":"+"7939", '\n', hb4node, nil)
 	t.leave = s.Cut
 	if err := s.Listen(); err != nil {
 		return err
 	}
 	go func() {
+		defer fmt.Println("->HBL err Daemon closed.")
+		fmt.Println("HBL err Daemon start.")
+		timeout := time.Second * 10
+		timer := time.NewTimer(timeout)
+
 		for {
-			v, ok := <-s.ErrChan()
-			if ok {
-				if v.Err.Error() == "err message received" {
-					//failedTimes++
+			select {
+			case v, ok := <-s.ErrChan():
+				if ok {
+					if v.Err.Error() == "succeed" { //node sends succeed.
+						timer.Reset(timeout)
+					}
+				} else {
+					return
 				}
-			} else {
+			case <-timer.C:
+				s.Cut()
+				fmt.Println("!Found Master is Dead")
 				return
+				//TODO: Timeout, master is dead.
 			}
 		}
 	}()
 	return nil
 }
 
-func daemonHBChecker(ip ipx) {
-	defer fmt.Println("HBChecker quit")
+func daemonHBChecker(ip ipx, csignal <-chan struct{}) { //for master check
+	defer fmt.Println("->HBChecker quit")
+	fmt.Println("HBChecker start.")
 	i := time.NewTicker(3 * time.Second)
 	failedTimes := 0
 	for {
 		select {
+		case <-csignal:
+			return
 		case <-i.C:
 			fmt.Println("-----------------------------------")
-			c := common.NewClient(ip.ipaddr+":"+"7939", '\n', hb4master, &failedTimes)
+			c := common.NewClient(ip.ipaddr+":"+"7939", '\n', hb4master, nil)
 			c.SetDeadLine(2 * time.Second)
 			if err := c.Dial(); err != nil {
 				//TODO: Failed once.
@@ -97,6 +116,7 @@ func daemonHBChecker(ip ipx) {
 				break
 			}
 			go func() {
+				fmt.Println("HBC err Daemon start.")
 				for {
 					v, ok := <-c.ErrChan()
 					if ok {
@@ -106,7 +126,7 @@ func daemonHBChecker(ip ipx) {
 							failedTimes = 0
 						}
 					} else {
-						fmt.Println("HBC closed.")
+						fmt.Println("->HBC err Daemon closed.")
 						return
 					}
 				}
@@ -157,6 +177,7 @@ func NewMaster(ipAddr string) MasterRoler {
 		local:        *t,
 		remote:       *t,
 		registeredIP: make([]string, 0),
+		closesignal:  make(chan struct{}),
 	}
 }
 
@@ -165,6 +186,7 @@ func (t *Node) Listen() error {
 	if err := server.Listen(); err != nil {
 		return err
 	}
+	t.leave = server.Cut
 	return nil
 }
 
@@ -183,4 +205,9 @@ func (t *Node) Register() error {
 
 func (t *Node) Leave() {
 	t.leave()
+}
+
+func (t *Node) Close() {
+	t.leave()
+	close(t.closesignal)
 }
