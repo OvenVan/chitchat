@@ -3,7 +3,8 @@ package chitchat
 import (
 	"errors"
 	"fmt"
-	"github.com/ovenvan/chitchat/common"
+	"net"
+	"reflect"
 	"time"
 )
 
@@ -34,7 +35,7 @@ type ipx struct {
 	ipport string
 }
 
-func registerNode(str []byte, s common.ReadFuncer) error {
+func registerNode(str []byte, s ReadFuncer) error {
 	if sx := string(str); sx != "" {
 		x := s.Addon().(*Node)
 		x.registeredIP = append(x.registeredIP, x.remote.ipaddr)
@@ -44,7 +45,7 @@ func registerNode(str []byte, s common.ReadFuncer) error {
 	return nil
 }
 
-func hb4node(str []byte, s common.ReadFuncer) error {
+func hb4node(str []byte, s ReadFuncer) error {
 	if sx := string(str); sx == "heartbeat ping" {
 		if err := s.Write("heartbeat pong"); err == nil {
 			return errors.New("succeed")
@@ -54,7 +55,7 @@ func hb4node(str []byte, s common.ReadFuncer) error {
 	return errors.New("err message received")
 }
 
-func hb4master(str []byte, s common.ReadFuncer) error {
+func hb4master(str []byte, s ReadFuncer) error {
 	defer s.Close()
 	if sx := string(str); sx == "heartbeat pong" {
 		return errors.New("succeed")
@@ -65,7 +66,7 @@ func hb4master(str []byte, s common.ReadFuncer) error {
 func (t *Node) daemonHBListener() error { //for Nodes listen Master's hbc
 	fmt.Println("HBListen start.")
 	defer fmt.Println("->HBListen quit.")
-	s := common.NewServer(t.local.ipaddr+":"+"7939", '\n', hb4node, nil)
+	s := NewServer(t.local.ipaddr+":"+"7939", '\n', hb4node, nil)
 	t.leave = s.Cut
 	if err := s.Listen(); err != nil {
 		return err
@@ -108,7 +109,7 @@ func daemonHBChecker(ip ipx, csignal <-chan struct{}) { //for master check
 			return
 		case <-i.C:
 			fmt.Println("-----------------------------------")
-			c := common.NewClient(ip.ipaddr+":"+"7939", '\n', hb4master, nil)
+			c := NewClient(ip.ipaddr+":"+"7939", '\n', hb4master, nil)
 			c.SetDeadLine(2 * time.Second)
 			if err := c.Dial(); err != nil {
 				//TODO: Failed once.
@@ -182,7 +183,7 @@ func NewMaster(ipAddr string) MasterRoler {
 }
 
 func (t *Node) Listen() error {
-	server := common.NewServer(t.local.ipaddr+":"+t.local.ipport, 0, registerNode, t)
+	server := NewServer(t.local.ipaddr+":"+t.local.ipport, 0, registerNode, t)
 	if err := server.Listen(); err != nil {
 		return err
 	}
@@ -191,7 +192,7 @@ func (t *Node) Listen() error {
 }
 
 func (t *Node) Register() error {
-	slave := common.NewClient(t.remote.ipaddr+":"+t.remote.ipport, 0, nil, nil)
+	slave := NewClient(t.remote.ipaddr+":"+t.remote.ipport, 0, nil, nil)
 	if err := slave.Dial(); err != nil {
 		return err
 	}
@@ -210,4 +211,26 @@ func (t *Node) Leave() {
 func (t *Node) Close() {
 	t.leave()
 	close(t.closesignal)
+}
+
+func mywrite(c net.Conn, i interface{}, d byte) error { //it's just a copy from Write(..)
+	if c == nil {
+		return errors.New("connection not found")
+	}
+	var data []byte
+
+	switch reflect.TypeOf(i).Kind() {
+	case reflect.String:
+		data = []byte(i.(string))
+	case reflect.Struct:
+		data = struct2byte(i)
+	default:
+		data = i.([]byte)
+	}
+
+	if d != 0 {
+		data = append(data, d)
+	}
+	_, err := c.Write(data)
+	return err
 }

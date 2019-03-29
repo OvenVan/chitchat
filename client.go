@@ -1,4 +1,4 @@
-package common
+package chitchat
 
 import (
 	"context"
@@ -9,7 +9,17 @@ import (
 
 type ClientReadFunc func([]byte, ReadFuncer) error
 
-type Client struct {
+type Client interface {
+	Dial() error
+	Close()
+	SetDeadLine(time.Duration)
+	ErrChan() <-chan Errsocket
+	Write(interface{}) error
+	GetRemoteAddr() string
+	GetLocalAddr() string
+}
+
+type client struct {
 	ipaddr    string
 	dialDDL   time.Duration
 	delimiter byte
@@ -30,19 +40,18 @@ type Client struct {
 }
 
 type hConnerClient struct {
-	conn net.Conn
-	d    byte
-	rcmu *sync.Mutex //lock for readfunc and close
-	//mu       *sync.Mutex
+	conn     net.Conn
+	d        byte
+	rcmu     *sync.Mutex //lock for readfunc and close
 	readfunc ClientReadFunc
 	eD       *eDer
 }
 
 func NewClient(
 	ipremotesocket string,
-	delim byte, readfunc ClientReadFunc, additional interface{}) *Client {
+	delim byte, readfunc ClientReadFunc, additional interface{}) Client {
 
-	c := &Client{
+	c := &client{
 		ipaddr:    ipremotesocket,
 		dialDDL:   0,
 		delimiter: delim,
@@ -60,7 +69,7 @@ func NewClient(
 	return c
 }
 
-func (t *Client) Dial() error {
+func (t *client) Dial() error {
 	var (
 		err        error
 		ctx, cfunc = context.WithCancel(context.Background())
@@ -89,7 +98,7 @@ func (t *Client) Dial() error {
 	return nil
 }
 
-func handleConnClient(h *hConnerClient, eC chan Errsocket, ctx context.Context, client *Client) {
+func handleConnClient(h *hConnerClient, eC chan Errsocket, ctx context.Context, client *client) {
 	//fmt.Println("Start hCC:", h.conn.LocalAddr(), "->", h.conn.RemoteAddr())
 	//defer fmt.Println("->hCC quit", h.conn.LocalAddr(), "->", h.conn.RemoteAddr())
 	strReqChan := make(chan []byte)
@@ -137,7 +146,7 @@ func handleConnClient(h *hConnerClient, eC chan Errsocket, ctx context.Context, 
 	}
 }
 
-func (t *Client) Close() {
+func (t *client) Close() {
 	go func() {
 		t.rcmu.Lock()
 		t.mu.Lock()
@@ -149,35 +158,35 @@ func (t *Client) Close() {
 	}()
 }
 
-func (t *Client) SetDeadLine(dDDL time.Duration) {
+func (t *client) SetDeadLine(dDDL time.Duration) {
 	t.dialDDL = dDDL
 }
 
-func (t *Client) ErrChan() <-chan Errsocket {
+func (t *client) ErrChan() <-chan Errsocket {
 	return t.eU
 }
 
-func (t *Client) GetRemoteAddr() string {
+func (t *client) GetRemoteAddr() string {
 	if t.conn == nil {
 		return ""
 	}
 	return t.conn.RemoteAddr().String()
 }
-func (t *Client) GetLocalAddr() string {
+func (t *client) GetLocalAddr() string {
 	if t.conn == nil {
 		return ""
 	}
 	return t.conn.LocalAddr().String()
 }
 
-func (t *Client) GetConn() net.Conn {
+func (t *client) GetConn() net.Conn {
 	return t.conn
 }
 
-func (t *Client) Addon() interface{} {
+func (t *client) Addon() interface{} {
 	return t.additional
 }
 
-func (t *Client) Write(i interface{}) error {
-	return Write(t.conn, i, t.delimiter)
+func (t *client) Write(i interface{}) error {
+	return writeFunc(t.conn, i, t.delimiter)
 }

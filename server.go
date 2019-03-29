@@ -1,4 +1,4 @@
-package common
+package chitchat
 
 import (
 	"context"
@@ -10,7 +10,18 @@ import (
 
 type ServerReadFunc func([]byte, ReadFuncer) error
 
-type Server struct {
+type Server interface {
+	Listen() error
+	Cut()
+	CloseRemote(string)
+	RangeRemoteAddr() []string
+	GetLocalAddr() string
+	SetDeadLine(time.Duration, time.Duration)
+	ErrChan() <-chan Errsocket
+	Write(interface{}) error
+}
+
+type server struct {
 	//unchangable data
 	ipaddr   string
 	readDDL  time.Duration
@@ -42,9 +53,9 @@ type hConnerServer struct {
 
 func NewServer(
 	ipaddrsocket string,
-	delim byte, readfunc ServerReadFunc, additional interface{}) *Server {
+	delim byte, readfunc ServerReadFunc, additional interface{}) Server {
 
-	s := &Server{
+	s := &server{
 		ipaddr:    ipaddrsocket,
 		readDDL:   0,
 		writeDDL:  0,
@@ -63,7 +74,7 @@ func NewServer(
 	return s
 }
 
-func (t *Server) Listen() error { //Notifies the consumer when an error occurs ASYNCHRONOUSLY
+func (t *server) Listen() error { //Notifies the consumer when an error occurs ASYNCHRONOUSLY
 	if t.readfunc == nil {
 		return errors.New("read function is nil")
 	}
@@ -81,7 +92,7 @@ func (t *Server) Listen() error { //Notifies the consumer when an error occurs A
 	return nil
 }
 
-func handleListen(s *Server, eC chan Errsocket, ctx context.Context) {
+func handleListen(s *server, eC chan Errsocket, ctx context.Context) {
 	//fmt.Println("Start hL")
 	//defer fmt.Println("->hL quit")
 	defer close(eC)
@@ -104,7 +115,6 @@ func handleListen(s *Server, eC chan Errsocket, ctx context.Context) {
 			}
 
 			cctx, childfunc := context.WithCancel(ctx) //TODO: if MAXLIVETIME is needed.
-			//s.remoteMap[conn.RemoteAddr().String()] = childfunc
 			s.remoteMap.Store(conn.RemoteAddr().String(), childfunc)
 
 			ceC := make(chan Errsocket)
@@ -119,7 +129,7 @@ func handleListen(s *Server, eC chan Errsocket, ctx context.Context) {
 	}
 }
 
-func handleConnServer(h *hConnerServer, eC chan Errsocket, ctx context.Context, s *Server) {
+func handleConnServer(h *hConnerServer, eC chan Errsocket, ctx context.Context, s *server) {
 	//fmt.Println("Start hCS:", h.conn.LocalAddr(), "->", h.conn.RemoteAddr())
 	//defer fmt.Println("->hCS quit", h.conn.LocalAddr(), "->", h.conn.RemoteAddr())
 	strReqChan := make(chan []byte)
@@ -148,7 +158,7 @@ func handleConnServer(h *hConnerServer, eC chan Errsocket, ctx context.Context, 
 			if !ok {
 				return //EOF && d!=0
 			}
-			err := h.readfunc(strReq, &Server{
+			err := h.readfunc(strReq, &server{
 				currentConn: h.conn,
 				delimiter:   h.d,
 				remoteMap:   s.remoteMap,
@@ -166,7 +176,7 @@ func handleConnServer(h *hConnerServer, eC chan Errsocket, ctx context.Context, 
 will not wait for the rest of goroutines' error message.
 make sure all connections has exited successfully before doing this
 */
-func (t *Server) Cut() {
+func (t *server) Cut() {
 	t.mu.Lock()
 	err := t.l.Close()
 	if err != nil {
@@ -178,7 +188,7 @@ func (t *Server) Cut() {
 	t.cancelfunc()
 }
 
-func (t *Server) CloseRemote(remoteAddr string) {
+func (t *server) CloseRemote(remoteAddr string) {
 	x, ok := t.remoteMap.Load(remoteAddr)
 	if !ok {
 		t.eU <- Errsocket{errors.New(remoteAddr + " does not connected to this server"), t.ipaddr}
@@ -188,7 +198,7 @@ func (t *Server) CloseRemote(remoteAddr string) {
 	t.remoteMap.Delete(remoteAddr)
 }
 
-func (t *Server) Close() {
+func (t *server) Close() {
 	remoteAddr := t.currentConn.RemoteAddr().String()
 	x, ok := t.remoteMap.Load(remoteAddr)
 	if !ok {
@@ -199,7 +209,7 @@ func (t *Server) Close() {
 	t.remoteMap.Delete(remoteAddr)
 }
 
-func (t *Server) RangeConn() []string {
+func (t *server) RangeRemoteAddr() []string {
 	rtnstring := make([]string, 0)
 	t.remoteMap.Range(
 		func(key, value interface{}) bool {
@@ -209,36 +219,36 @@ func (t *Server) RangeConn() []string {
 	return rtnstring
 }
 
-func (t *Server) SetDeadLine(rDDL time.Duration, wDDL time.Duration) {
+func (t *server) SetDeadLine(rDDL time.Duration, wDDL time.Duration) {
 	t.readDDL, t.writeDDL = rDDL, wDDL
 }
 
-func (t *Server) ErrChan() <-chan Errsocket {
+func (t *server) ErrChan() <-chan Errsocket {
 	return t.eU
 }
 
-func (t *Server) GetRemoteAddr() string {
+func (t *server) GetRemoteAddr() string {
 	if t.currentConn == nil {
 		return ""
 	}
 	return t.currentConn.RemoteAddr().String()
 }
 
-func (t *Server) GetLocalAddr() string {
+func (t *server) GetLocalAddr() string {
 	if t.currentConn == nil {
 		return ""
 	}
 	return t.currentConn.LocalAddr().String()
 }
 
-func (t *Server) GetConn() net.Conn {
+func (t *server) GetConn() net.Conn {
 	return t.currentConn
 }
 
-func (t *Server) Addon() interface{} {
+func (t *server) Addon() interface{} {
 	return t.additional
 }
 
-func (t *Server) Write(i interface{}) error {
-	return Write(t.currentConn, i, t.delimiter)
+func (t *server) Write(i interface{}) error {
+	return writeFunc(t.currentConn, i, t.delimiter)
 }

@@ -7,6 +7,7 @@ import (
 )
 
 func TestSlave_Register(t *testing.T) {
+	SetWriteFunc(mywrite)
 	master := NewMaster("127.0.0.1:12345")
 	_ = master.Listen()
 	node1 := NewNode("127.0.0.1:12345")

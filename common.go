@@ -1,4 +1,4 @@
-package common
+package chitchat
 
 import (
 	"bytes"
@@ -10,6 +10,7 @@ import (
 )
 
 var closedchan = make(chan struct{})
+var writeFunc wf = Write
 
 type ReadFuncer interface {
 	GetRemoteAddr() string
@@ -24,19 +25,9 @@ func init() {
 	close(closedchan)
 }
 
+type wf func(net.Conn, interface{}, byte) error
+
 type eDinitfunc func(eC chan Errsocket)
-
-type Errsocket struct {
-	Err  error
-	Addr string
-}
-
-type reader struct {
-	conn       net.Conn
-	d          byte
-	mu         *sync.Mutex
-	strReqChan chan<- []byte
-}
 
 type eDer struct {
 	eU chan Errsocket
@@ -47,6 +38,18 @@ type eDer struct {
 	//why it's a pointer: mutex will be copied separately. make sure the replicas are the same.
 	mu  *sync.Mutex
 	pmu *sync.Mutex
+}
+
+type Errsocket struct {
+	Err        error
+	RemoteAddr string
+}
+
+type reader struct {
+	conn       net.Conn
+	d          byte
+	mu         *sync.Mutex
+	strReqChan chan<- []byte
 }
 
 type sliceMock struct {
@@ -79,7 +82,7 @@ func errDiversion(eD *eDer) func(eC chan Errsocket) {
 }
 
 /*
-Server:
+server:
 Delimiter with remoted closed connection:         EOF warning.
 Delimiter with local   closed connection:         used of a closed network warning.
 Delimiter with healthy connection:                waiting for delimiter to DO readfunc
@@ -122,6 +125,10 @@ func read(r *reader, eC chan Errsocket) {
 	}
 }
 
+func SetWriteFunc(f wf) {
+	writeFunc = f
+}
+
 //it doesn't seem good
 func Write(c net.Conn, i interface{}, d byte) error {
 	if c == nil {
@@ -141,7 +148,6 @@ func Write(c net.Conn, i interface{}, d byte) error {
 	if d != 0 {
 		data = append(data, d)
 	}
-	//fmt.Println(data)
 	_, err := c.Write(data)
 	return err
 }
