@@ -12,8 +12,8 @@ type ServerReadFunc func([]byte, ReadFuncer) error
 
 type Server interface {
 	Listen() error
-	Cut()
-	CloseRemote(string)
+	Cut() error
+	CloseRemote(string) error
 	RangeRemoteAddr() []string
 	GetLocalAddr() string
 	SetDeadLine(time.Duration, time.Duration)
@@ -176,26 +176,28 @@ func handleConnServer(h *hConnerServer, eC chan Errsocket, ctx context.Context, 
 will not wait for the rest of goroutines' error message.
 make sure all connections has exited successfully before doing this
 */
-func (t *server) Cut() {
+func (t *server) Cut() error {
 	t.mu.Lock()
 	err := t.l.Close()
 	if err != nil {
-		t.eU <- Errsocket{err, t.ipaddr}
+		//t.eU <- Errsocket{err, t.ipaddr}
+		return err
 	}
 	t.closed = true
 	close(t.eU)
 	t.mu.Unlock()
 	t.cancelfunc()
+	return nil
 }
 
-func (t *server) CloseRemote(remoteAddr string) {
+func (t *server) CloseRemote(remoteAddr string) error {
 	x, ok := t.remoteMap.Load(remoteAddr)
 	if !ok {
-		t.eU <- Errsocket{errors.New(remoteAddr + " does not connected to this server"), t.ipaddr}
-		return
+		return errors.New(remoteAddr + " does not connected to this server")
 	}
 	x.(context.CancelFunc)()
 	t.remoteMap.Delete(remoteAddr)
+	return nil
 }
 
 func (t *server) Close() {

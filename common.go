@@ -10,7 +10,7 @@ import (
 )
 
 var closedchan = make(chan struct{})
-var writeFunc wf = Write
+var writeFunc = Write
 
 type ReadFuncer interface {
 	GetRemoteAddr() string

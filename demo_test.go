@@ -14,7 +14,7 @@ func TestSlave_Register(t *testing.T) {
 	_ = node1.Register()
 	time.Sleep(time.Second * 10)
 	//node1.Leave()
-	master.Close()
+	fmt.Println(master.Close())
 	fmt.Println("Master closed")
 	time.Sleep(time.Hour)
 }

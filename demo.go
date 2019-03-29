@@ -10,11 +10,11 @@ import (
 
 type MasterRoler interface {
 	Listen() error
-	Close()
+	Close() error
 }
 type NodeRoler interface {
 	Register() error
-	Leave()
+	Leave() error
 }
 
 type Node struct {
@@ -23,7 +23,7 @@ type Node struct {
 	remote     ipx
 
 	//For Nodes/master
-	leave func()
+	leave func() error
 
 	//For MasterNode
 	registeredIP []string
@@ -88,7 +88,10 @@ func (t *Node) daemonHBListener() error { //for Nodes listen Master's hbc
 					return
 				}
 			case <-timer.C:
-				s.Cut()
+				err := s.Cut()
+				if err != nil {
+					println(err)
+				}
 				fmt.Println("!Found Master is Dead")
 				return
 				//TODO: Timeout, master is dead.
@@ -204,13 +207,17 @@ func (t *Node) Register() error {
 	return t.daemonHBListener()
 }
 
-func (t *Node) Leave() {
-	t.leave()
+func (t *Node) Leave() error {
+	return t.leave()
 }
 
-func (t *Node) Close() {
-	t.leave()
+func (t *Node) Close() error {
+	err := t.leave()
+	if err != nil {
+		return err
+	}
 	close(t.closesignal)
+	return nil
 }
 
 func mywrite(c net.Conn, i interface{}, d byte) error { //it's just a copy from Write(..)
