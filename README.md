@@ -137,3 +137,6 @@ If you want to restore the byte stream to a structure, using `*(**Struct)(unsafe
 
 ## Demo
 A simple heartbeat detection package.
+
+## For More info
+[如何使用golang - chitchat](https://www.jianshu.com/p/956c04a9310b)
