@@ -129,11 +129,11 @@ This parameter was already given (additional) when the Server (Client) was initi
 If the time is set to a null value, additional parameters cannot be obtained by the Addon method at this time.
 
 ## Limitations of Write
+The Write method encodes any transmitted data through JSON. 
+You can decode it through the **Unmarshal()** function when you need it. 
+The Write method automatically supplements the separator for you, so you don't need to artificially add delimiters.
 
-there are some rules when using Write method:
-1. If you try to write to a `struct`, make sure that the `struct` does NOT contain pointer values (including string).
-If you want to restore the byte stream to a structure, using `*(**Struct)(unsafe.Pointer(&str))`.
-2. If you have a better write method, you can use `func SetWriteFunc(wf)` to set a new method instead of the default ones.
+However If the Write method provided by the framework does not suit you, you can replace it with the ' SetWriteFunc () ' function.
 
 ## Demo
 A simple heartbeat detection package.
