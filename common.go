@@ -2,11 +2,10 @@ package chitchat
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net"
-	"reflect"
 	"sync"
-	"unsafe"
 )
 
 var closedchan = make(chan struct{})
@@ -50,12 +49,6 @@ type reader struct {
 	d          byte
 	mu         *sync.Mutex
 	strReqChan chan<- []byte
-}
-
-type sliceMock struct {
-	addr uintptr
-	len  int
-	cap  int
 }
 
 func errDiversion(eD *eDer) func(eC chan Errsocket) {
@@ -129,39 +122,19 @@ func SetWriteFunc(f wf) {
 	writeFunc = f
 }
 
-//it doesn't seem good
+//it seems better
 func Write(c net.Conn, i interface{}, d byte) error {
 	if c == nil {
 		return errors.New("connection not found")
 	}
-	var data []byte
 
-	switch reflect.TypeOf(i).Kind() {
-	case reflect.String:
-		data = []byte(i.(string))
-	case reflect.Struct:
-		data = struct2byte(i)
-	default:
-		data = i.([]byte)
+	data, err := json.Marshal(i)
+	if err != nil {
+		return err
 	}
-
 	if d != 0 {
 		data = append(data, d)
 	}
-	_, err := c.Write(data)
+	_, err = c.Write(data)
 	return err
-}
-
-func struct2byte(t interface{}) []byte {
-	var testStruct = &t
-	Len := unsafe.Sizeof(*testStruct)
-
-	p := reflect.New(reflect.TypeOf(t))
-	p.Elem().Set(reflect.ValueOf(t))
-	testBytes := &sliceMock{
-		addr: p.Elem().UnsafeAddr(),
-		cap:  int(Len),
-		len:  int(Len),
-	}
-	return *(*[]byte)(unsafe.Pointer(testBytes))
 }

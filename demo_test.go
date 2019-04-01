@@ -6,8 +6,7 @@ import (
 	"time"
 )
 
-func TestSlave_Register(t *testing.T) {
-	SetWriteFunc(mywrite)
+func TestAll(t *testing.T) {
 	master := NewMaster("127.0.0.1:12345")
 	_ = master.Listen()
 	node1 := NewNode("127.0.0.1:12345")
@@ -16,5 +15,5 @@ func TestSlave_Register(t *testing.T) {
 	//node1.Leave()
 	fmt.Println(master.Close())
 	fmt.Println("Master closed")
-	time.Sleep(time.Hour)
+	time.Sleep(time.Second * 20)
 }

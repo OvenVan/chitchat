@@ -1,10 +1,9 @@
 package chitchat
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"reflect"
 	"time"
 )
 
@@ -35,8 +34,14 @@ type ipx struct {
 	ipport string
 }
 
+type pingStruct struct {
+	Data string
+	Id   int
+}
+
 func registerNode(str []byte, s ReadFuncer) error {
 	if sx := string(str); sx != "" {
+		fmt.Println(sx)
 		x := s.Addon().(*Node)
 		x.registeredIP = append(x.registeredIP, x.remote.ipaddr)
 		go daemonHBChecker(x.remote, x.closesignal)
@@ -46,8 +51,16 @@ func registerNode(str []byte, s ReadFuncer) error {
 }
 
 func hb4node(str []byte, s ReadFuncer) error {
-	if sx := string(str); sx == "heartbeat ping" {
-		if err := s.Write("heartbeat pong"); err == nil {
+	v := new(pingStruct)
+	err := json.Unmarshal(str, v)
+	if err != nil {
+		return err
+	}
+	if v.Data == "heartbeat ping" {
+		if err := s.Write(pingStruct{
+			Data: "heartbeat pong",
+			Id:   v.Id + 1,
+		}); err == nil {
 			return errors.New("succeed")
 		}
 		return errors.New("writing data error")
@@ -57,7 +70,12 @@ func hb4node(str []byte, s ReadFuncer) error {
 
 func hb4master(str []byte, s ReadFuncer) error {
 	defer s.Close()
-	if sx := string(str); sx == "heartbeat pong" {
+	v := new(pingStruct)
+	err := json.Unmarshal(str, v)
+	if err != nil {
+		return err
+	}
+	if v.Data == "heartbeat pong" {
 		return errors.New("succeed")
 	}
 	return errors.New("err message received")
@@ -135,7 +153,10 @@ func daemonHBChecker(ip ipx, csignal <-chan struct{}) { //for master check
 					}
 				}
 			}()
-			if err := c.Write("heartbeat ping"); err != nil {
+			if err := c.Write(pingStruct{
+				Data: "heartbeat ping",
+				Id:   0,
+			}); err != nil {
 				failedTimes++
 				break
 			}
@@ -218,26 +239,4 @@ func (t *Node) Close() error {
 	}
 	close(t.closesignal)
 	return nil
-}
-
-func mywrite(c net.Conn, i interface{}, d byte) error { //it's just a copy from Write(..)
-	if c == nil {
-		return errors.New("connection not found")
-	}
-	var data []byte
-
-	switch reflect.TypeOf(i).Kind() {
-	case reflect.String:
-		data = []byte(i.(string))
-	case reflect.Struct:
-		data = struct2byte(i)
-	default:
-		data = i.([]byte)
-	}
-
-	if d != 0 {
-		data = append(data, d)
-	}
-	_, err := c.Write(data)
-	return err
 }
